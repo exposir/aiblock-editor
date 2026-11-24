@@ -1,0 +1,7 @@
+minimumReleaseAgeExclude:
+  - lucide-react@1.78.0
+strictPeerDependencies: true
+allowBuilds:
+  esbuild: true
+overrides:
+  'jsdom@25.0.1>cssstyle': 4.1.0

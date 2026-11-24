@@ -1,0 +1,82 @@
+import { autoUpdate, computePosition, flip, offset, shift } from '@floating-ui/dom'
+import type { Placement, ReferenceElement } from '@floating-ui/dom'
+import type { Editor } from '@tiptap/core'
+import { useCallback, useLayoutEffect, useState, useSyncExternalStore } from 'react'
+import type { RefObject } from 'react'
+import { overlayOrigin, toOverlayRect } from './overlay-geometry'
+import type { OverlayRect } from './overlay-geometry'
+import { subscribeOverlayLayout } from './overlay-layout'
+
+export function useEditorDocument(editor: Editor | null) {
+  const subscribe = useCallback((refresh: () => void) => {
+    editor?.on('transaction', refresh)
+    return () => { editor?.off('transaction', refresh) }
+  }, [editor])
+  const snapshot = useCallback(() => editor?.state.doc ?? null, [editor])
+  return useSyncExternalStore(subscribe, snapshot, snapshot)
+}
+
+export function useEditorSnapshot(editor: Editor) {
+  const subscribe = useCallback((refresh: () => void) => {
+    editor.on('transaction', refresh)
+    return () => { editor.off('transaction', refresh) }
+  }, [editor])
+  const snapshot = useCallback(() => editor.state, [editor])
+  return useSyncExternalStore(subscribe, snapshot, snapshot)
+}
+
+export function overlayTop(header: HTMLElement | null) {
+  return Math.max(0, header?.getBoundingClientRect().bottom ?? 0) + 8
+}
+
+/** Transient popups stay viewport-fixed so flip/shift can dodge the viewport and sticky header. */
+export function useAnchoredPosition(
+  floating: RefObject<HTMLElement | null>,
+  anchor: ReferenceElement | null,
+  placement: Placement,
+  distance = 6,
+) {
+  useLayoutEffect(() => {
+    const panel = floating.current
+    if (!panel || !anchor) return
+    let alive = true
+    const header = panel.ownerDocument.querySelector<HTMLElement>('[data-editor-sticky-header]')
+    const update = () => {
+      const padding = { top: overlayTop(header), right: 8, bottom: 8, left: 8 }
+      void computePosition(anchor, panel, {
+        strategy: 'fixed', placement, middleware: [offset(distance), flip({ padding }), shift({ padding, crossAxis: true })],
+      }).then(({ x, y }) => {
+        if (!alive) return
+        panel.style.left = `${x}px`
+        panel.style.top = `${y}px`
+        panel.style.visibility = 'visible'
+      })
+    }
+    const stop = autoUpdate(anchor, panel, update)
+    const observer = header && typeof ResizeObserver !== 'undefined' ? new ResizeObserver(update) : null
+    if (header) observer?.observe(header)
+    return () => { alive = false; stop(); observer?.disconnect() }
+  }, [anchor, distance, floating, placement])
+}
+
+export function useOverlayRect(
+  anchor: HTMLElement | null,
+  host: HTMLElement | null,
+  editorRoot: HTMLElement | null,
+) {
+  const [rect, setRect] = useState<OverlayRect | null>(null)
+  useLayoutEffect(() => {
+    if (!anchor || !host || !editorRoot) {
+      setRect(null)
+      return
+    }
+    const update = () => {
+      const next = toOverlayRect(anchor.getBoundingClientRect(), overlayOrigin(host))
+      setRect(previous => previous && previous.left === next.left && previous.top === next.top &&
+        previous.width === next.width && previous.height === next.height ? previous : next)
+    }
+    update()
+    return subscribeOverlayLayout(editorRoot, update)
+  }, [anchor, editorRoot, host])
+  return rect
+}
