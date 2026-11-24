@@ -19,6 +19,8 @@ import { MultiBlockSelectionExtension } from './multi-block-selection'
 import { SlashCommand } from './slash-command'
 import { Toggle, ToggleContent, ToggleSummary } from './toggle'
 import { PortalTaskItem } from '../views/task-item-view'
+import { MarkdownPaste } from '../markdown/markdown-paste'
+import { MarkdownInputRules } from './markdown-input-rules'
 
 const CommentableInlineCode = InlineCode.extend({ excludes: 'code bold italic strike underline link textStyle highlight' })
 
@@ -66,5 +68,7 @@ export function createEditorExtensions(): Extensions {
     MultiBlockSelectionExtension,
     BlockDragExtension,
     BlockIdExtension,
+    MarkdownPaste,
+    MarkdownInputRules,
   ]
 }

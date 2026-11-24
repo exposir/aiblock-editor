@@ -26,6 +26,10 @@ export interface ToggleAttributes {
 
 export type ColumnLayout = number | readonly (readonly ProseMirrorNode[])[]
 
+export type ColumnLayoutInput =
+  | number
+  | readonly (readonly ProseMirrorNode[] | object)[]
+
 export type ColumnEdgeTarget =
   | { blockPos: number; side: 'left' | 'right' }
   | { columnListPos: number; columnIndex: number; side: 'left' | 'right' }

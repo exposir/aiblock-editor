@@ -1,7 +1,7 @@
 import { EditorContent, useEditor } from '@tiptap/react'
 import { TextSelection } from '@tiptap/pm/state'
-import { Download, FileText, Keyboard, MessagesSquare, PanelLeft, RotateCcw, X } from 'lucide-react'
-import { useRef, useState } from 'react'
+import { Check, ChevronDown, ClipboardCopy, Download, FileDown, FileText, FileUp, Keyboard, MessagesSquare, PanelLeft, RotateCcw, X } from 'lucide-react'
+import { useEffect, useRef, useState } from 'react'
 import { CommentSidebar } from './components/CommentSidebar'
 import { OutlineSidebar } from './components/OutlineSidebar'
 import type { CommentThread } from './editor/comments'
@@ -12,6 +12,14 @@ import { TableControlsOverlay } from './editor/components/TableControlsOverlay'
 import { revealAnchor } from './editor/components/reveal-anchor'
 import { demoComments, demoDocument, demoTitle } from './editor/demo-document'
 import { commentAnchor, createEditorExtensions, openSlashMenu } from './editor/extensions'
+import {
+  commentsForMarkdownImport,
+  downloadMarkdown,
+  importMarkdown,
+  importedTitle,
+  isMarkdownFile,
+} from './editor/markdown/markdown-files'
+import { docToMarkdown } from './editor/markdown/markdown-codec'
 
 const extensions = createEditorExtensions()
 
@@ -23,16 +31,26 @@ function commentId() {
   return crypto.randomUUID?.() ?? Array.from(crypto.getRandomValues(new Uint32Array(4)), word => word.toString(16)).join('-')
 }
 
+function hasFilePayload(data: DataTransfer) {
+  return data.types.includes('Files') || [...data.items].some(item => item.kind === 'file')
+}
+
 function Workspace({ onReset }: { onReset: () => void }) {
   const surface = useRef<HTMLElement>(null)
   const help = useRef<HTMLDialogElement>(null)
   const reset = useRef<HTMLDialogElement>(null)
+  const markdownInput = useRef<HTMLInputElement>(null)
+  const toolsMenu = useRef<HTMLDivElement>(null)
+  const copyTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined)
   const [overlayHost, setOverlayHost] = useState<HTMLDivElement | null>(null)
   const [title, setTitle] = useState(demoTitle)
   const [outlineOpen, setOutlineOpen] = useState(showPanelsInitially)
   const [commentsOpen, setCommentsOpen] = useState(showPanelsInitially)
   const [threads, setThreads] = useState<readonly CommentThread[]>(demoComments)
   const [active, setActive] = useState<string | null>(null)
+  const [toolsOpen, setToolsOpen] = useState(false)
+  const [copied, setCopied] = useState(false)
+  const [dragDepth, setDragDepth] = useState(0)
   const editor = useEditor({
     extensions,
     content: demoDocument,
@@ -40,6 +58,29 @@ function Workspace({ onReset }: { onReset: () => void }) {
       attributes: { class: 'document-editor', 'aria-label': '文档正文', role: 'textbox', 'aria-multiline': 'true' },
     },
   })
+
+  useEffect(() => {
+    if (!toolsOpen) return
+    const dismiss = (event: PointerEvent) => {
+      if (event.target instanceof Node && !toolsMenu.current?.contains(event.target)) {
+        setToolsOpen(false)
+        setCopied(false)
+      }
+    }
+    const escape = (event: KeyboardEvent) => {
+      if (event.key !== 'Escape') return
+      setToolsOpen(false)
+      setCopied(false)
+    }
+    document.addEventListener('pointerdown', dismiss, true)
+    document.addEventListener('keydown', escape)
+    return () => {
+      document.removeEventListener('pointerdown', dismiss, true)
+      document.removeEventListener('keydown', escape)
+    }
+  }, [toolsOpen])
+
+  useEffect(() => () => clearTimeout(copyTimer.current), [])
 
   function beginComment() {
     if (!editor) return
@@ -92,6 +133,37 @@ function Workspace({ onReset }: { onReset: () => void }) {
     setTimeout(() => URL.revokeObjectURL(url), 0)
   }
 
+  function resetForImportedMarkdown(fileName: string, markdown: string) {
+    if (!editor) return
+    importMarkdown(editor, markdown)
+    setTitle(importedTitle(fileName, markdown))
+    setThreads(commentsForMarkdownImport())
+    setActive(null)
+    setCopied(false)
+    setToolsOpen(false)
+  }
+
+  function chooseMarkdownFile(file: File | undefined) {
+    if (!file || !editor || !isMarkdownFile(file)) return
+    file.text().then(markdown => resetForImportedMarkdown(file.name, markdown)).catch(() => undefined)
+  }
+
+  async function copyMarkdown() {
+    if (!editor) return
+    clearTimeout(copyTimer.current)
+    try {
+      await navigator.clipboard.writeText(docToMarkdown(editor.state.doc))
+      setCopied(true)
+      copyTimer.current = setTimeout(() => {
+        setCopied(false)
+        copyTimer.current = undefined
+      }, 1500)
+    } catch {
+      copyTimer.current = undefined
+      setCopied(false)
+    }
+  }
+
   return (
     <>
       <header className="app-header workspace-header" data-editor-sticky-header="">
@@ -110,9 +182,35 @@ function Workspace({ onReset }: { onReset: () => void }) {
           </button>
           <button type="button" className="icon-control" aria-label="快捷键" title="快捷键"
             onClick={() => help.current?.showModal()}><Keyboard size={18} aria-hidden="true" /></button>
-          <button type="button" className="icon-control" aria-label="导出 JSON" title="导出 JSON" onClick={exportJSON}>
-            <Download size={18} aria-hidden="true" />
-          </button>
+          <div className="workspace-export" ref={toolsMenu}>
+            <button type="button" className="icon-control export-trigger" aria-label="导入与导出" title="导入与导出"
+              aria-expanded={toolsOpen} onClick={() => { setToolsOpen(open => !open); setCopied(false) }}>
+              <Download size={18} aria-hidden="true" />
+              <ChevronDown className="export-chevron" size={11} aria-hidden="true" />
+            </button>
+            {toolsOpen && (
+              <div className="export-menu" role="menu" aria-label="导入与导出">
+                <button type="button" role="menuitem" onClick={() => markdownInput.current?.click()}>
+                  <FileUp size={15} aria-hidden="true" /><span>导入 Markdown</span><small>.md</small>
+                </button>
+                <button type="button" role="menuitem" onClick={() => { downloadMarkdown(editor!.state.doc, title); setToolsOpen(false) }}>
+                  <FileDown size={15} aria-hidden="true" /><span>导出 Markdown</span><small>.md</small>
+                </button>
+                <button type="button" role="menuitem" onClick={() => void copyMarkdown()}>
+                  {copied ? <Check size={15} aria-hidden="true" /> : <ClipboardCopy size={15} aria-hidden="true" />}
+                  <span>{copied ? '已复制 Markdown' : '复制为 Markdown'}</span>
+                </button>
+                <button type="button" role="menuitem" onClick={() => { exportJSON(); setToolsOpen(false) }}>
+                  <Download size={15} aria-hidden="true" /><span>导出 JSON</span><small>.json</small>
+                </button>
+              </div>
+            )}
+            <input ref={markdownInput} type="file" accept=".md,.markdown,text/markdown" hidden
+              onChange={event => {
+                chooseMarkdownFile(event.target.files?.[0])
+                event.target.value = ''
+              }} />
+          </div>
           <button type="button" className="icon-control" aria-label="重置演示文档" title="重置演示文档"
             onClick={() => reset.current?.showModal()}>
             <RotateCcw size={17} aria-hidden="true" />
@@ -121,7 +219,29 @@ function Workspace({ onReset }: { onReset: () => void }) {
       </header>
       <div className="workspace" data-outline={outlineOpen} data-comments={commentsOpen}>
         {outlineOpen && <OutlineSidebar editor={editor} onClose={() => setOutlineOpen(false)} />}
-        <main ref={surface} className="document-surface" data-document-surface="">
+        <main ref={surface} className="document-surface" data-document-surface=""
+          data-dragging-md={dragDepth > 0 ? 'true' : undefined}
+          onDragEnter={event => {
+            if (hasFilePayload(event.dataTransfer)) {
+              setDragDepth(depth => depth + 1)
+            }
+          }}
+          onDragOver={event => {
+            if (hasFilePayload(event.dataTransfer)) {
+              event.preventDefault()
+              event.dataTransfer.dropEffect = 'copy'
+            }
+          }}
+          onDragLeave={() => setDragDepth(depth => Math.max(0, depth - 1))}
+          onDrop={event => {
+            const files = [...event.dataTransfer.files]
+            setDragDepth(0)
+            if (!files.length && !hasFilePayload(event.dataTransfer)) return
+            event.preventDefault()
+            const file = files.find(isMarkdownFile)
+            if (file) chooseMarkdownFile(file)
+          }}>
+          {dragDepth > 0 && <div className="markdown-drop-hint" aria-hidden="true">拖放以导入 Markdown</div>}
           <EditorContent editor={editor}>
             <div ref={setOverlayHost} className="document-overlays" data-document-overlays="" />
           </EditorContent>
@@ -142,6 +262,9 @@ function Workspace({ onReset }: { onReset: () => void }) {
           <div><dt>扩展或缩小块选区</dt><dd><kbd>Shift</kbd> + <kbd>↑</kbd> / <kbd>↓</kbd></dd></div>
           <div><dt>删除选中块</dt><dd><kbd>Backspace</kbd> / <kbd>Delete</kbd></dd></div>
           <div><dt>撤销</dt><dd><kbd>Cmd / Ctrl</kbd> + <kbd>Z</kbd></dd></div>
+          <div><dt>折叠块快捷输入</dt><dd><kbd>&gt;&gt; </kbd></dd></div>
+          <div><dt>高亮块快捷输入</dt><dd><kbd>[! </kbd></dd></div>
+          <div><dt>智能粘贴 Markdown</dt><dd><kbd>Cmd / Ctrl</kbd> + <kbd>V</kbd>，纯文本生效</dd></div>
         </dl>
       </dialog>
       <dialog ref={reset} className="shortcut-dialog reset-dialog" aria-labelledby="reset-heading"

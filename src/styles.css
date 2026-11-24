@@ -120,6 +120,37 @@ a:focus-visible, [tabindex]:focus-visible { outline: var(--focus-ring); outline-
 
 .document-identity, .workspace-tools { display: flex; align-items: center; gap: 0.5rem; }
 .document-identity { min-width: 0; flex: 1 1 14rem; }
+.workspace-export { position: relative; }
+.export-trigger { position: relative; }
+.export-chevron { position: absolute; right: 0.12rem; bottom: 0.2rem; color: var(--ink-muted); }
+.export-menu {
+  position: absolute;
+  top: calc(100% + 0.45rem);
+  right: 0;
+  z-index: 70;
+  width: min(15.5rem, calc(100vw - 1rem));
+  padding: 0.35rem;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-card);
+  background: rgba(255, 253, 251, 0.98);
+  box-shadow: var(--shadow-float);
+  -webkit-backdrop-filter: blur(12px);
+  backdrop-filter: blur(12px);
+}
+.export-menu button {
+  display: flex;
+  align-items: center;
+  gap: 0.55rem;
+  width: 100%;
+  min-height: 2.2rem;
+  padding: 0.38rem 0.55rem;
+  border-radius: var(--radius-control);
+  color: var(--ink);
+  text-align: left;
+  font-size: 0.8125rem;
+}
+.export-menu button:hover, .export-menu button:focus-visible { background: var(--bg-selected); color: var(--ink-strong); }
+.export-menu button small { margin-left: auto; color: var(--ink-muted); font-size: 0.68rem; }
 
 .document-logo {
   display: grid;
@@ -196,6 +227,32 @@ a:focus-visible, [tabindex]:focus-visible { outline: var(--focus-ring); outline-
   border: 1px solid rgba(31, 30, 29, 0.08);
   border-radius: var(--radius-paper);
   box-shadow: var(--shadow-paper);
+  position: relative;
+}
+
+.workspace .document-surface[data-dragging-md='true'] {
+  border-color: var(--terracotta-border);
+  box-shadow: var(--shadow-paper), 0 0 0 3px var(--terracotta-wash);
+}
+
+.markdown-drop-hint {
+  position: fixed;
+  top: calc(var(--header-h) + 1rem);
+  left: 50%;
+  z-index: 55;
+  transform: translateX(-50%);
+  padding: 0.55rem 1rem;
+  border: 1px dashed var(--terracotta-border);
+  border-radius: 999px;
+  background: rgba(255, 253, 251, 0.96);
+  box-shadow: var(--shadow-float);
+  color: var(--terracotta-deep);
+  font-size: 0.8125rem;
+  font-weight: 550;
+  white-space: nowrap;
+  pointer-events: none;
+  -webkit-backdrop-filter: blur(8px);
+  backdrop-filter: blur(8px);
 }
 
 .document-overlays {
@@ -939,4 +996,5 @@ button.task-checkbox:hover { box-shadow: 0 0 0 3px rgba(31, 30, 29, 0.07); }
   .document-identity { flex-basis: 0; }
   .workspace-tools { gap: 0.15rem; }
   .workspace-tools .icon-control { width: 1.65rem; }
+  .export-menu { position: fixed; top: calc(var(--header-h) + 0.2rem); right: 0.5rem; }
 }

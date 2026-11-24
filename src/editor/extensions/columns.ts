@@ -5,7 +5,7 @@ import { Plugin, PluginKey } from '@tiptap/pm/state'
 import type { EditorState, Transaction } from '@tiptap/pm/state'
 import { ReplaceAroundStep, ReplaceStep, Transform } from '@tiptap/pm/transform'
 import { ReactNodeViewRenderer } from '@tiptap/react'
-import type { ColumnEdgeTarget, ColumnLayout } from '../types'
+import type { ColumnEdgeTarget, ColumnLayout, ColumnLayoutInput } from '../types'
 import { ColumnListView } from '../views/column-list-view'
 import { MAX_COLUMNS, normalizeColumnWidths, resizedColumnWidths } from './column-widths'
 
@@ -35,7 +35,7 @@ function createColumn(type: NodeType, blocks: readonly ProseMirrorNode[], width:
   return type.createAndFill({ width }, Fragment.fromArray([...blocks]))
 }
 
-export function createColumns(schema: Schema, layout: ColumnLayout): ProseMirrorNode | null {
+export function createColumns(schema: Schema, layout: ColumnLayoutInput): ProseMirrorNode | null {
   const count = typeof layout === 'number' ? layout : layout.length
   const { column, columnList } = schema.nodes
   if (!column || !columnList || !Number.isInteger(count) || count < 2 || count > MAX_COLUMNS) return null
@@ -43,7 +43,7 @@ export function createColumns(schema: Schema, layout: ColumnLayout): ProseMirror
   const columns: ProseMirrorNode[] = []
   const widths = normalizeColumnWidths(Array.from({ length: count }))
   for (const [index, width] of widths.entries()) {
-    const node = createColumn(column, typeof layout === 'number' ? [] : layout[index]!, width)
+    const node = createColumn(column, typeof layout === 'number' ? [] : layout[index] as readonly ProseMirrorNode[], width)
     if (!node) return null
     columns.push(node)
   }

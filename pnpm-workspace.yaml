@@ -1,5 +1,6 @@
 minimumReleaseAgeExclude:
   - lucide-react@1.78.0
+  - marked@18.3.0
 strictPeerDependencies: true
 allowBuilds:
   esbuild: true
