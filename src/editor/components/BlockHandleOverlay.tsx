@@ -18,6 +18,7 @@ interface BlockHandleOverlayProps {
   readonly editor: Editor
   readonly surface: RefObject<HTMLElement | null>
   readonly host: HTMLElement
+  readonly blockHash: (blockId: string) => string
   readonly onQuickInsert?: (editor: Editor, cursorPos: number) => void
 }
 
@@ -73,7 +74,7 @@ function selectedSource(editor: Editor, pos: number): BlockDragSource {
   return { anchorBlockPos: pos, headBlockPos: pos }
 }
 
-export function BlockHandleOverlay({ editor, surface, host, onQuickInsert }: BlockHandleOverlayProps) {
+export function BlockHandleOverlay({ editor, surface, host, blockHash, onQuickInsert }: BlockHandleOverlayProps) {
   const layer = useRef<HTMLDivElement>(null)
   const handle = useRef<HTMLButtonElement>(null)
   const gesture = useRef<Gesture | null>(null)
@@ -310,21 +311,6 @@ export function BlockHandleOverlay({ editor, surface, host, onQuickInsert }: Blo
       if (selection instanceof MultiBlockSelection) showBlock(measureBlock(editor.view, selection.headBlockPos))
     }
 
-    function followBlockLink() {
-      const hash = win!.location.hash
-      if (!hash.startsWith('#block-')) return
-      let id: string
-      try {
-        id = decodeURIComponent(hash.slice('#block-'.length))
-      } catch {
-        return
-      }
-      const pos = positionOfBlockId(editor.state.doc, id)
-      const target = pos === null ? null : editor.view.nodeDOM(pos)
-      if (target instanceof HTMLElement) target.scrollIntoView({ block: 'center' })
-    }
-
-    const linkFrame = win.requestAnimationFrame(followBlockLink)
     const stopLayout = subscribeOverlayLayout(dom, refreshLayout)
     doc.addEventListener('pointerdown', startMarquee, true)
     doc.addEventListener('pointermove', queuePointer, { passive: true })
@@ -333,12 +319,10 @@ export function BlockHandleOverlay({ editor, surface, host, onQuickInsert }: Blo
     doc.addEventListener('lostpointercapture', finish)
     doc.addEventListener('keydown', escape, true)
     win.addEventListener('scroll', followDragScroll, true)
-    win.addEventListener('hashchange', followBlockLink)
     editor.on('selectionUpdate', showSelected)
     editor.on('update', refreshLayout)
     return () => {
       win.cancelAnimationFrame(frame)
-      win.cancelAnimationFrame(linkFrame)
       stopLayout()
       doc.removeEventListener('pointerdown', startMarquee, true)
       doc.removeEventListener('pointermove', queuePointer)
@@ -347,7 +331,6 @@ export function BlockHandleOverlay({ editor, surface, host, onQuickInsert }: Blo
       doc.removeEventListener('lostpointercapture', finish)
       doc.removeEventListener('keydown', escape, true)
       win.removeEventListener('scroll', followDragScroll, true)
-      win.removeEventListener('hashchange', followBlockLink)
       editor.off('selectionUpdate', showSelected)
       editor.off('update', refreshLayout)
     }
@@ -383,7 +366,7 @@ export function BlockHandleOverlay({ editor, surface, host, onQuickInsert }: Blo
         </div>
       )}
       {menuOpen && handle.current && (
-        <BlockActionMenu editor={editor} id={menuId} anchor={handle.current} onClose={focus => {
+        <BlockActionMenu editor={editor} id={menuId} anchor={handle.current} blockHash={blockHash} onClose={focus => {
           setMenu(false)
           if (focus === 'editor') editor.view.focus()
           else handle.current?.focus()

@@ -1,6 +1,5 @@
 import type { Editor } from '@tiptap/core'
-import { docToMarkdown, markdownToDoc } from './markdown-codec'
-import type { CommentThread } from '../comments'
+import { docToMarkdown } from './markdown-codec'
 
 export function markdownFile(doc: Editor['state']['doc']): Blob {
   return new Blob([docToMarkdown(doc)], { type: 'text/markdown;charset=utf-8' })
@@ -22,19 +21,8 @@ export function isMarkdownFile(file: File): boolean {
   return /\.(?:md|markdown)$/i.test(file.name)
 }
 
-export function importMarkdown(editor: Editor, markdown: string) {
-  const next = markdownToDoc(editor.state.schema, markdown)
-  editor.commands.setContent(next)
-  editor.commands.clearRetiredComments()
-  return next
-}
-
 export function importedTitle(fileName: string, markdown: string): string {
   const firstHeading = markdown.match(/^#\s+(.+)$/m)?.[1]?.trim()
   if (firstHeading) return firstHeading
   return fileName.replace(/\.(?:md|markdown)$/i, '').trim() || '未命名文档'
-}
-
-export function commentsForMarkdownImport(): readonly CommentThread[] {
-  return []
 }

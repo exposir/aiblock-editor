@@ -1,16 +1,17 @@
 import type { Editor } from '@tiptap/core'
-import { List, PanelLeftClose } from 'lucide-react'
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { positionOfBlockId } from '../editor/components/block-geometry'
 import { useEditorDocument } from '../editor/components/editor-ui'
-import { revealAnchor } from '../editor/components/reveal-anchor'
+import { revealBlock } from '../editor/components/reveal-anchor'
 import { extractOutline } from '../editor/extensions/block-id'
 
-export function OutlineSidebar({ editor, onClose }: { editor: Editor | null; onClose: () => void }) {
+export function OutlineSidebar({ editor }: { editor: Editor | null }) {
   const doc = useEditorDocument(editor)
   const outline = useMemo(() => doc ? extractOutline(doc).filter(entry => entry.text.trim()) : [], [doc])
   const [active, setActive] = useState<string | null>(null)
   const clicked = useRef<string | null>(null)
+  const cancelReveal = useRef<(() => void) | undefined>(undefined)
+
+  useEffect(() => () => cancelReveal.current?.(), [])
 
   useEffect(() => {
     if (!editor) return
@@ -21,6 +22,7 @@ export function OutlineSidebar({ editor, onClose }: { editor: Editor | null; onC
       if (frame) return
       frame = win.requestAnimationFrame(() => {
         frame = 0
+        if (editor.isDestroyed) return
         let closest: { id: string; top: number } | null = null
         let first: string | null = null
         let lastVisible: string | null = null
@@ -62,30 +64,20 @@ export function OutlineSidebar({ editor, onClose }: { editor: Editor | null; onC
 
   function locate(id: string) {
     if (!editor) return
-    const pos = positionOfBlockId(editor.state.doc, id)
-    if (pos === null) return
+    cancelReveal.current?.()
+    cancelReveal.current = revealBlock(editor, id)
     clicked.current = id
     setActive(id)
-    revealAnchor(editor, pos + 1, () => {
-      const current = positionOfBlockId(editor.state.doc, id)
-      const node = current === null ? null : editor.view.nodeDOM(current)
-      return node instanceof HTMLElement ? node : null
-    })
   }
 
   return (
-    <aside className="workspace-sidebar outline-sidebar" id="document-outline" aria-label="目录">
-      <div className="sidebar-heading"><List size={16} aria-hidden="true" /><h2>目录</h2>
-        <button type="button" className="icon-control" aria-label="收起目录" onClick={onClose}>
-          <PanelLeftClose size={16} aria-hidden="true" />
-        </button>
-      </div>
+    <div className="workspace-navigation-body outline-sidebar" id="document-outline">
       {outline.length ? <nav aria-label="文档章节">
         {outline.map(entry => <button type="button" key={entry.blockId}
           aria-current={active === entry.blockId ? 'location' : undefined}
           style={{ paddingInlineStart: `${0.65 + (entry.level - 1) * 0.65}rem` }}
           onClick={() => locate(entry.blockId)}>{entry.text}</button>)}
       </nav> : <p className="sidebar-empty">添加标题后显示目录</p>}
-    </aside>
+    </div>
   )
 }

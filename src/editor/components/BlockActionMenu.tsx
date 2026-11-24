@@ -30,10 +30,11 @@ interface BlockActionMenuProps {
   readonly editor: Editor
   readonly anchor: HTMLButtonElement
   readonly id: string
+  readonly blockHash: (blockId: string) => string
   readonly onClose: (focus: 'editor' | 'handle') => void
 }
 
-export function BlockActionMenu({ editor, anchor, id, onClose }: BlockActionMenuProps) {
+export function BlockActionMenu({ editor, anchor, id, blockHash, onClose }: BlockActionMenuProps) {
   const panel = useRef<HTMLDivElement>(null)
   const [copyError, setCopyError] = useState(false)
   const { selection } = editor.state
@@ -81,7 +82,7 @@ export function BlockActionMenu({ editor, anchor, id, onClose }: BlockActionMenu
     try {
       const links = ids.map(id => {
         const url = new URL(win.location.href)
-        url.hash = `block-${encodeURIComponent(id)}`
+        url.hash = blockHash(id)
         return url.href
       })
       await win.navigator.clipboard.writeText(links.join('\n'))

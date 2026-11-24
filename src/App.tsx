@@ -1,76 +1,72 @@
-import { EditorContent, useEditor } from '@tiptap/react'
-import { TextSelection } from '@tiptap/pm/state'
-import { Check, ChevronDown, ClipboardCopy, Download, FileDown, FileText, FileUp, Keyboard, MessagesSquare, PanelLeft, RotateCcw, X } from 'lucide-react'
-import { useEffect, useRef, useState } from 'react'
-import { CommentSidebar } from './components/CommentSidebar'
-import { OutlineSidebar } from './components/OutlineSidebar'
-import type { CommentThread } from './editor/comments'
-import { BlockHandleOverlay } from './editor/components/BlockHandleOverlay'
-import { BubbleToolbar } from './editor/components/BubbleToolbar'
-import { CodeBlockOverlay } from './editor/components/CodeBlockOverlay'
-import { TableControlsOverlay } from './editor/components/TableControlsOverlay'
-import { revealAnchor } from './editor/components/reveal-anchor'
-import { demoComments, demoDocument, demoTitle } from './editor/demo-document'
-import { commentAnchor, createEditorExtensions, openSlashMenu } from './editor/extensions'
-import {
-  commentsForMarkdownImport,
-  downloadMarkdown,
-  importMarkdown,
-  importedTitle,
-  isMarkdownFile,
-} from './editor/markdown/markdown-files'
+import { getSchema } from '@tiptap/core'
+import type { Editor } from '@tiptap/core'
+import { Check, ChevronDown, ChevronRight, ClipboardCopy, Download, FileDown, FileUp, Keyboard, List, MessagesSquare, PanelLeft, RotateCcw, X } from 'lucide-react'
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react'
+import { createEditorExtensions } from './editor/extensions'
 import { docToMarkdown } from './editor/markdown/markdown-codec'
+import { downloadMarkdown, isMarkdownFile } from './editor/markdown/markdown-files'
+import { PageEditor } from './workspace/PageEditor'
+import type { EditPage } from './workspace/PageEditor'
+import { WorkspaceDialog } from './workspace/WorkspaceDialog'
+import type { WorkspaceDialogRequest } from './workspace/WorkspaceDialog'
+import { WorkspaceNavigation } from './workspace/WorkspaceNavigation'
+import type { NavigationView, PageAction } from './workspace/WorkspaceNavigation'
+import {
+  DEFAULT_PAGE_TITLE, activatePage, addPage, copyPage, findPage, formatPageHash, hasPageContent,
+  importMarkdownPage, movePage, pageAncestors, pageTitle, removePage, updatePage,
+} from './workspace/page-store'
+import type { PageRecord } from './workspace/page-store'
+import { newPageIdentity, useWorkspace } from './workspace/useWorkspace'
 
 const extensions = createEditorExtensions()
+const schema = getSchema(extensions)
 
-function showPanelsInitially() {
-  return typeof window !== 'undefined' && window.matchMedia('(min-width: 1080px)').matches
+function wideViewport() {
+  return window.matchMedia('(min-width: 1080px)').matches
 }
 
-function commentId() {
-  return crypto.randomUUID?.() ?? Array.from(crypto.getRandomValues(new Uint32Array(4)), word => word.toString(16)).join('-')
-}
-
-function hasFilePayload(data: DataTransfer) {
-  return data.types.includes('Files') || [...data.items].some(item => item.kind === 'file')
-}
-
-function Workspace({ onReset }: { onReset: () => void }) {
-  const surface = useRef<HTMLElement>(null)
+function Workspace({ workspace, anchor, saveFailed, change, reset }: ReturnType<typeof useWorkspace>) {
   const help = useRef<HTMLDialogElement>(null)
-  const reset = useRef<HTMLDialogElement>(null)
+  const titleInput = useRef<HTMLInputElement>(null)
+  const focusTitleFor = useRef<string | null>(null)
   const markdownInput = useRef<HTMLInputElement>(null)
   const toolsMenu = useRef<HTMLDivElement>(null)
   const copyTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined)
-  const [overlayHost, setOverlayHost] = useState<HTMLDivElement | null>(null)
-  const [title, setTitle] = useState(demoTitle)
-  const [outlineOpen, setOutlineOpen] = useState(showPanelsInitially)
-  const [commentsOpen, setCommentsOpen] = useState(showPanelsInitially)
-  const [threads, setThreads] = useState<readonly CommentThread[]>(demoComments)
-  const [active, setActive] = useState<string | null>(null)
+  const [navigationOpen, setNavigationOpen] = useState(wideViewport)
+  const [navigationView, setNavigationView] = useState<NavigationView>('pages')
+  const [commentsOpen, setCommentsOpen] = useState(wideViewport)
   const [toolsOpen, setToolsOpen] = useState(false)
-  const [copied, setCopied] = useState(false)
-  const [dragDepth, setDragDepth] = useState(0)
-  const editor = useEditor({
-    extensions,
-    content: demoDocument,
-    editorProps: {
-      attributes: { class: 'document-editor', 'aria-label': '文档正文', role: 'textbox', 'aria-multiline': 'true' },
-    },
-  })
+  const [copiedPageId, setCopiedPageId] = useState<string | null>(null)
+  const [notice, setNotice] = useState('')
+  const [dialog, setDialog] = useState<WorkspaceDialogRequest | null>(null)
+  const [binding, setBinding] = useState<{ pageId: string; editor: Editor } | null>(null)
+  const activePage = findPage(workspace, workspace.activePageId)!
+  const copied = copiedPageId === activePage.id
+  const editor = binding?.pageId === activePage.id && !binding.editor.isDestroyed ? binding.editor : null
+  const ancestors = pageAncestors(workspace, activePage.id)
+
+  const editorReady = useCallback((pageId: string, editor: Editor) => { setBinding({ pageId, editor }) }, [])
+
+  useLayoutEffect(() => {
+    if (focusTitleFor.current !== activePage.id) return
+    focusTitleFor.current = null
+    titleInput.current?.focus({ preventScroll: true })
+    titleInput.current?.select()
+  }, [activePage.id])
+
+  useEffect(() => {
+    setToolsOpen(false)
+    setCopiedPageId(null)
+    clearTimeout(copyTimer.current)
+  }, [activePage.id])
 
   useEffect(() => {
     if (!toolsOpen) return
     const dismiss = (event: PointerEvent) => {
-      if (event.target instanceof Node && !toolsMenu.current?.contains(event.target)) {
-        setToolsOpen(false)
-        setCopied(false)
-      }
+      if (event.target instanceof Node && !toolsMenu.current?.contains(event.target)) setToolsOpen(false)
     }
     const escape = (event: KeyboardEvent) => {
-      if (event.key !== 'Escape') return
-      setToolsOpen(false)
-      setCopied(false)
+      if (event.key === 'Escape') setToolsOpen(false)
     }
     document.addEventListener('pointerdown', dismiss, true)
     document.addEventListener('keydown', escape)
@@ -82,47 +78,92 @@ function Workspace({ onReset }: { onReset: () => void }) {
 
   useEffect(() => () => clearTimeout(copyTimer.current), [])
 
-  function beginComment() {
-    if (!editor) return
-    const { selection, doc } = editor.state
-    if (!(selection instanceof TextSelection) || selection.empty) return
-    const quote = doc.textBetween(selection.from, selection.to, '\n').trim()
-    if (!quote) return
-    const id = commentId()
-    if (!editor.chain().addCommentMark(id).setActiveComment(id).run()) return
-    setThreads(previous => [...previous, { id, quote, messages: [], resolved: false }])
-    setActive(id)
-    setCommentsOpen(true)
+  const editPage: EditPage = (id, patch, deferred) => {
+    change(current => {
+      const page = findPage(current, id)
+      return page ? updatePage(current, id, typeof patch === 'function' ? patch(page) : patch, Date.now()) : current
+    }, deferred)
   }
 
-  function locateComment(thread: CommentThread) {
-    if (!editor || thread.resolved) return
-    setActive(thread.id)
-    editor.commands.setActiveComment(thread.id)
-    const pos = commentAnchor(editor.state.doc, thread.id)
-    if (pos === null) return
-    revealAnchor(editor, pos, () =>
-      editor.view.dom.querySelector<HTMLElement>(`[data-comment-id="${CSS.escape(thread.id)}"]`))
+  function selectNavigation(view: NavigationView) {
+    setNavigationView(view)
+    setNavigationOpen(true)
+    if (!wideViewport()) setCommentsOpen(false)
   }
 
-  function reply(id: string, text: string) {
-    const message = { author: '我', id: commentId(), text }
-    setThreads(previous => previous.map(thread => thread.id === id && !thread.resolved
-      ? { ...thread, messages: [...thread.messages, message] } : thread))
+  function toggleNavigation(view: NavigationView) {
+    if (navigationOpen && navigationView === view) setNavigationOpen(false)
+    else selectNavigation(view)
   }
 
-  function closeThread(id: string, resolved: boolean) {
-    editor?.commands.removeCommentMark(id)
-    setActive(previous => previous === id ? null : previous)
-    setThreads(previous => resolved
-      ? previous.map(thread => thread.id === id ? { ...thread, resolved: true } : thread)
-      : previous.filter(thread => thread.id !== id))
+  function showComments(open: boolean) {
+    setCommentsOpen(open)
+    if (open && !wideViewport()) setNavigationOpen(false)
+  }
+
+  function openPage(id: string) {
+    change(current => activatePage(current, id))
+    if (!wideViewport()) setNavigationOpen(false)
+  }
+
+  function newPage(parentId: string | null) {
+    const identity = newPageIdentity()
+    focusTitleFor.current = identity.id
+    change(current => addPage(current, identity, { parentId }))
+    if (!wideViewport()) setNavigationOpen(false)
+  }
+
+  function documentFor(page: PageRecord) {
+    return page.id === activePage.id && editor ? editor.state.doc : schema.nodeFromJSON(page.content)
+  }
+
+  function pageAction(action: PageAction, id: string) {
+    const page = findPage(workspace, id)
+    if (!page) return
+    switch (action) {
+      case 'duplicate':
+        change(current => copyPage(current, id, newPageIdentity()))
+        if (!wideViewport()) setNavigationOpen(false)
+        return
+      case 'export':
+        downloadMarkdown(documentFor(page), pageTitle(page))
+        return
+      case 'delete':
+        if (!hasPageContent(page) && pageTitle(page) === DEFAULT_PAGE_TITLE && !workspace.pages.some(child => child.parentId === id)) {
+          change(current => removePage(current, id, newPageIdentity()))
+          return
+        }
+        break
+    }
+    setDialog({ kind: action, pageId: id })
+  }
+
+  function confirmDialog(value: string) {
+    if (!dialog) return
+    switch (dialog.kind) {
+      case 'rename': editPage(dialog.pageId, { title: value.trim() }); break
+      case 'move': change(current => movePage(current, dialog.pageId, value || null, Date.now())); break
+      case 'delete': change(current => removePage(current, dialog.pageId, newPageIdentity())); break
+      case 'reset': reset(); break
+    }
+  }
+
+  async function chooseMarkdownFile(file: File | undefined) {
+    if (!file || !isMarkdownFile(file)) return
+    setNotice('')
+    try {
+      const markdown = await file.text()
+      change(current => importMarkdownPage(current, schema, newPageIdentity(), file.name, markdown))
+      if (!wideViewport()) setNavigationOpen(false)
+      setToolsOpen(false)
+    } catch {
+      setNotice('无法导入这个 Markdown 文件。')
+    }
   }
 
   function exportJSON() {
-    if (!editor) return
-    const name = title.trim() || '未命名文档'
-    const data = { title: name, document: editor.getJSON(), comments: threads }
+    const name = pageTitle(activePage)
+    const data = { title: name, document: documentFor(activePage).toJSON(), comments: activePage.comments }
     const url = URL.createObjectURL(new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' }))
     const link = document.createElement('a')
     link.href = url
@@ -133,122 +174,96 @@ function Workspace({ onReset }: { onReset: () => void }) {
     setTimeout(() => URL.revokeObjectURL(url), 0)
   }
 
-  function resetForImportedMarkdown(fileName: string, markdown: string) {
-    if (!editor) return
-    importMarkdown(editor, markdown)
-    setTitle(importedTitle(fileName, markdown))
-    setThreads(commentsForMarkdownImport())
-    setActive(null)
-    setCopied(false)
-    setToolsOpen(false)
-  }
-
-  function chooseMarkdownFile(file: File | undefined) {
-    if (!file || !editor || !isMarkdownFile(file)) return
-    file.text().then(markdown => resetForImportedMarkdown(file.name, markdown)).catch(() => undefined)
-  }
-
   async function copyMarkdown() {
-    if (!editor) return
     clearTimeout(copyTimer.current)
     try {
-      await navigator.clipboard.writeText(docToMarkdown(editor.state.doc))
-      setCopied(true)
-      copyTimer.current = setTimeout(() => {
-        setCopied(false)
-        copyTimer.current = undefined
-      }, 1500)
+      await navigator.clipboard.writeText(docToMarkdown(documentFor(activePage)))
+      setCopiedPageId(activePage.id)
+      copyTimer.current = setTimeout(() => setCopiedPageId(null), 1500)
     } catch {
-      copyTimer.current = undefined
-      setCopied(false)
+      setCopiedPageId(null)
+      setNotice('无法将 Markdown 写入剪贴板。')
     }
   }
 
   return (
     <>
       <header className="app-header workspace-header" data-editor-sticky-header="">
-        <div className="document-identity">
-          <span className="document-logo"><FileText size={19} aria-hidden="true" /></span>
-          <input aria-label="文档标题" value={title} placeholder="未命名文档" onChange={event => setTitle(event.target.value)} />
-        </div>
+        <nav className="document-identity" aria-label="页面层级">
+          <span className="document-logo" aria-hidden="true">{activePage.icon}</span>
+          {ancestors.length > 0 && <div className="document-ancestors">
+            {ancestors.map(page => <span className="breadcrumb-step" key={page.id}>
+              <a href={formatPageHash(page.id)} title={pageTitle(page)} onClick={event => {
+                if (event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return
+                event.preventDefault()
+                openPage(page.id)
+              }}>{pageTitle(page)}</a>
+              <ChevronRight size={13} aria-hidden="true" />
+            </span>)}
+          </div>}
+          <input ref={titleInput} aria-label="文档标题" aria-current="page" value={activePage.title} placeholder={DEFAULT_PAGE_TITLE}
+            onChange={event => editPage(activePage.id, { title: event.target.value })} />
+        </nav>
         <div className="workspace-tools" role="group" aria-label="文档工具">
-          <button type="button" className="icon-control" aria-label="目录" title="目录" aria-expanded={outlineOpen}
-            aria-controls={outlineOpen ? 'document-outline' : undefined} onClick={() => setOutlineOpen(open => !open)}>
-            <PanelLeft size={18} aria-hidden="true" />
-          </button>
+          <button type="button" className="icon-control" aria-label="页面侧栏" title="页面"
+            aria-expanded={navigationOpen && navigationView === 'pages'} aria-controls={navigationOpen ? 'workspace-navigation' : undefined}
+            onClick={() => toggleNavigation('pages')}><PanelLeft size={18} aria-hidden="true" /></button>
+          <button type="button" className="icon-control" aria-label="目录侧栏" title="目录"
+            aria-expanded={navigationOpen && navigationView === 'outline'} aria-controls={navigationOpen ? 'workspace-navigation' : undefined}
+            onClick={() => toggleNavigation('outline')}><List size={18} aria-hidden="true" /></button>
           <button type="button" className="icon-control" aria-label="评论侧栏" title="评论侧栏" aria-expanded={commentsOpen}
-            aria-controls={commentsOpen ? 'document-comments' : undefined} onClick={() => setCommentsOpen(open => !open)}>
+            aria-controls={commentsOpen ? 'document-comments' : undefined} onClick={() => showComments(!commentsOpen)}>
             <MessagesSquare size={18} aria-hidden="true" />
           </button>
           <button type="button" className="icon-control" aria-label="快捷键" title="快捷键"
             onClick={() => help.current?.showModal()}><Keyboard size={18} aria-hidden="true" /></button>
           <div className="workspace-export" ref={toolsMenu}>
             <button type="button" className="icon-control export-trigger" aria-label="导入与导出" title="导入与导出"
-              aria-expanded={toolsOpen} onClick={() => { setToolsOpen(open => !open); setCopied(false) }}>
+              aria-expanded={toolsOpen} onClick={() => { setToolsOpen(open => !open); setCopiedPageId(null) }}>
               <Download size={18} aria-hidden="true" />
               <ChevronDown className="export-chevron" size={11} aria-hidden="true" />
             </button>
             {toolsOpen && (
-              <div className="export-menu" role="menu" aria-label="导入与导出">
-                <button type="button" role="menuitem" onClick={() => markdownInput.current?.click()}>
+              <div className="export-menu" role="group" aria-label="导入与导出">
+                <button type="button" onClick={() => markdownInput.current?.click()}>
                   <FileUp size={15} aria-hidden="true" /><span>导入 Markdown</span><small>.md</small>
                 </button>
-                <button type="button" role="menuitem" onClick={() => { downloadMarkdown(editor!.state.doc, title); setToolsOpen(false) }}>
+                <button type="button" onClick={() => { downloadMarkdown(documentFor(activePage), pageTitle(activePage)); setToolsOpen(false) }}>
                   <FileDown size={15} aria-hidden="true" /><span>导出 Markdown</span><small>.md</small>
                 </button>
-                <button type="button" role="menuitem" onClick={() => void copyMarkdown()}>
+                <button type="button" onClick={() => void copyMarkdown()}>
                   {copied ? <Check size={15} aria-hidden="true" /> : <ClipboardCopy size={15} aria-hidden="true" />}
-                  <span>{copied ? '已复制 Markdown' : '复制为 Markdown'}</span>
+                  <span aria-live="polite">{copied ? '已复制 Markdown' : '复制为 Markdown'}</span>
                 </button>
-                <button type="button" role="menuitem" onClick={() => { exportJSON(); setToolsOpen(false) }}>
+                <button type="button" onClick={() => { exportJSON(); setToolsOpen(false) }}>
                   <Download size={15} aria-hidden="true" /><span>导出 JSON</span><small>.json</small>
                 </button>
               </div>
             )}
             <input ref={markdownInput} type="file" accept=".md,.markdown,text/markdown" hidden
               onChange={event => {
-                chooseMarkdownFile(event.target.files?.[0])
+                void chooseMarkdownFile(event.target.files?.[0])
                 event.target.value = ''
               }} />
           </div>
-          <button type="button" className="icon-control" aria-label="重置演示文档" title="重置演示文档"
-            onClick={() => reset.current?.showModal()}>
-            <RotateCcw size={17} aria-hidden="true" />
-          </button>
+          <button type="button" className="icon-control" aria-label="重置示例工作区" title="重置示例工作区"
+            onClick={() => setDialog({ kind: 'reset' })}><RotateCcw size={17} aria-hidden="true" /></button>
         </div>
       </header>
-      <div className="workspace" data-outline={outlineOpen} data-comments={commentsOpen}>
-        {outlineOpen && <OutlineSidebar editor={editor} onClose={() => setOutlineOpen(false)} />}
-        <main ref={surface} className="document-surface" data-document-surface=""
-          data-dragging-md={dragDepth > 0 ? 'true' : undefined}
-          onDragEnter={event => {
-            if (hasFilePayload(event.dataTransfer)) {
-              setDragDepth(depth => depth + 1)
-            }
-          }}
-          onDragOver={event => {
-            if (hasFilePayload(event.dataTransfer)) {
-              event.preventDefault()
-              event.dataTransfer.dropEffect = 'copy'
-            }
-          }}
-          onDragLeave={() => setDragDepth(depth => Math.max(0, depth - 1))}
-          onDrop={event => {
-            const files = [...event.dataTransfer.files]
-            setDragDepth(0)
-            if (!files.length && !hasFilePayload(event.dataTransfer)) return
-            event.preventDefault()
-            const file = files.find(isMarkdownFile)
-            if (file) chooseMarkdownFile(file)
-          }}>
-          {dragDepth > 0 && <div className="markdown-drop-hint" aria-hidden="true">拖放以导入 Markdown</div>}
-          <EditorContent editor={editor}>
-            <div ref={setOverlayHost} className="document-overlays" data-document-overlays="" />
-          </EditorContent>
-        </main>
-        {commentsOpen && <CommentSidebar threads={threads} active={active} onLocate={locateComment} onReply={reply}
-          onResolve={id => closeThread(id, true)} onDelete={id => closeThread(id, false)} onClose={() => setCommentsOpen(false)} />}
+      <div className="workspace" data-navigation={navigationOpen} data-comments={commentsOpen}>
+        <WorkspaceNavigation workspace={workspace} view={navigationView} open={navigationOpen} editor={editor}
+          onView={selectNavigation} onClose={() => setNavigationOpen(false)} onActivate={openPage} onCreate={newPage}
+          onIcon={(id, icon) => editPage(id, { icon })} onAction={pageAction} />
+        <PageEditor key={activePage.id} page={activePage} extensions={extensions} anchor={anchor} commentsOpen={commentsOpen}
+          onCommentsOpen={showComments} onEditorReady={editorReady} onEdit={editPage} onImport={file => void chooseMarkdownFile(file)} />
       </div>
+      {(notice || saveFailed) && <div className="workspace-notice" role="status">
+        {notice || '浏览器无法保存工作区。'}
+        {notice && <button type="button" className="icon-control" aria-label="关闭提示" onClick={() => setNotice('')}>
+          <X size={15} aria-hidden="true" />
+        </button>}
+      </div>}
+      {dialog && <WorkspaceDialog request={dialog} workspace={workspace} onClose={() => setDialog(null)} onConfirm={confirmDialog} />}
       <dialog ref={help} className="shortcut-dialog" aria-labelledby="shortcut-heading">
         <div className="sidebar-heading"><h2 id="shortcut-heading">快捷键</h2>
           <form method="dialog"><button type="submit" className="icon-control" aria-label="关闭快捷键">
@@ -267,30 +282,11 @@ function Workspace({ onReset }: { onReset: () => void }) {
           <div><dt>智能粘贴 Markdown</dt><dd><kbd>Cmd / Ctrl</kbd> + <kbd>V</kbd>，纯文本生效</dd></div>
         </dl>
       </dialog>
-      <dialog ref={reset} className="shortcut-dialog reset-dialog" aria-labelledby="reset-heading"
-        aria-describedby="reset-description">
-        <div className="sidebar-heading"><h2 id="reset-heading">重置演示文档</h2></div>
-        <p id="reset-description">当前标题、正文和评论将被演示内容替换。</p>
-        <form method="dialog" className="reset-actions">
-          <button type="submit" autoFocus>取消</button>
-          <button type="button" className="reset-confirm" onClick={() => { reset.current?.close(); onReset() }}>
-            确认重置
-          </button>
-        </form>
-      </dialog>
-      {editor && <>
-        <BubbleToolbar editor={editor} onComment={beginComment} />
-        {overlayHost && <>
-          <BlockHandleOverlay editor={editor} surface={surface} host={overlayHost} onQuickInsert={openSlashMenu} />
-          <TableControlsOverlay editor={editor} host={overlayHost} />
-          <CodeBlockOverlay editor={editor} host={overlayHost} />
-        </>}
-      </>}
     </>
   )
 }
 
 export default function App() {
-  const [version, setVersion] = useState(0)
-  return <Workspace key={version} onReset={() => setVersion(previous => previous + 1)} />
+  const store = useWorkspace(schema)
+  return <Workspace key={store.revision} {...store} />
 }
