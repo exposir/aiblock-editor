@@ -28,7 +28,7 @@ export type PageChanges = Partial<Pick<PageRecord, 'title' | 'icon' | 'content' 
 type NewPage = PageChanges & { parentId?: string | null }
 
 export const DEFAULT_PAGE_TITLE = '无标题文档'
-export const WORKSPACE_STORAGE_KEY = 'lark-block-editor.workspace.v1'
+export const WORKSPACE_STORAGE_KEY = 'aiblock-editor.workspace.v1'
 
 export function pageTitle(page: PageMetadata): string {
   return page.title.trim() || DEFAULT_PAGE_TITLE

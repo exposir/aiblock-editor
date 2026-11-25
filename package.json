@@ -1,5 +1,5 @@
 {
-  "name": "lark-block-editor",
+  "name": "aiblock-editor",
   "version": "0.1.0",
   "private": true,
   "license": "MIT",
@@ -17,7 +17,10 @@
     "electron:dev": "node scripts/dev-electron.mjs",
     "electron:pack": "pnpm electron:build && electron-builder --dir",
     "cli:build": "node scripts/build-cli.mjs",
-    "cli": "node dist-cli/lark-doc.mjs"
+    "cli": "node scripts/run-cli.mjs",
+    "docs:dev": "vitepress dev docs",
+    "docs:build": "vitepress build docs",
+    "docs:preview": "vitepress preview docs"
   },
   "dependencies": {
     "@floating-ui/dom": "1.8.0",
@@ -68,12 +71,13 @@
     "tailwindcss": "3.4.19",
     "typescript": "6.0.3",
     "vite": "7.3.8",
+    "vitepress": "1.6.4",
     "vitest": "5.1.1"
   },
   "main": "dist-electron/main.cjs",
   "build": {
-    "appId": "com.larkblockeditor.desktop",
-    "productName": "Lark Block Editor",
+    "appId": "com.aiblockeditor.desktop",
+    "productName": "AIBlock Editor",
     "icon": "build/icon.png",
     "directories": {
       "output": "release"
@@ -96,6 +100,6 @@
     }
   },
   "bin": {
-    "lark-doc": "./dist-cli/lark-doc.mjs"
+    "aiblock-doc": "./dist-cli/aiblock-doc.mjs"
   }
 }

@@ -4,7 +4,7 @@ import type { FileHandle } from 'node:fs/promises'
 import { open, readFile, rm } from 'node:fs/promises'
 import { basename, extname, join } from 'node:path'
 import { Readable } from 'node:stream'
-import { isAssetId, isImageAssetMetadata, imageAssetMetadata, maxImageBytes, validateImageInput } from '../src/workspace/asset-format.js'
+import { imageAssetMetadata, imageAssetUrlPrefix, isAssetId, isImageAssetMetadata, maxImageBytes, validateImageInput } from '../src/workspace/asset-format.js'
 import { createWorkspaceFiles, readOptionalText, writeAtomicFile, writeAtomicText } from '../src/workspace/workspace-files.js'
 import type { MarkdownFile, SaveFileOptions } from '../src/desktop/bridge.js'
 
@@ -56,7 +56,8 @@ async function readJSON(path: string, limit: number): Promise<unknown> {
 }
 
 export function assetRequestId(url: string): string | null {
-  const id = /^lark-asset:\/\/media\/([^/]+)$/.exec(url)?.[1]
+  if (!url.startsWith(imageAssetUrlPrefix)) return null
+  const id = url.slice(imageAssetUrlPrefix.length)
   return isAssetId(id) ? id : null
 }
 

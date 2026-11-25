@@ -1,5 +1,5 @@
 import { getDesktopBridge } from '../desktop/bridge'
-import { imageAssetMetadata, isAssetId, isImageAssetMetadata, maxImageBytes, validateImageInput } from './asset-format'
+import { imageAssetMetadata, imageAssetUrlPrefix, isAssetId, isImageAssetMetadata, maxImageBytes, validateImageInput } from './asset-format'
 import type { ImageAssetInput, ImageAssetMetadata } from './asset-format'
 import { idbCommit, idbResult, openWorkspaceDatabase } from './workspace-storage'
 
@@ -151,7 +151,7 @@ export function createAssetStore(bridge = getDesktopBridge()): AssetStore {
   if (!bridge) return createBrowserAssetStore()
   const resolve = async (id: string) => {
     const [metadata] = await bridge.readImageAssets(assetIds([id]))
-    return metadata ? `lark-asset://media/${id}` : null
+    return metadata ? `${imageAssetUrlPrefix}${id}` : null
   }
   return {
     async saveImageAsset(input) { return bridge.saveImageAsset(await imageBytes(input)) },

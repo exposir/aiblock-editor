@@ -10,7 +10,7 @@
       (() => {
         let mode = window.desktop?.initialTheme
         if (mode == null) {
-          try { mode = localStorage.getItem('lark-block-editor.theme.v1') } catch {}
+          try { mode = localStorage.getItem('aiblock-editor.theme.v1') } catch {}
         }
         const resolved = mode === 'light' || mode === 'dark'
           ? mode
@@ -23,7 +23,7 @@
       :root { background: #F5F4EF; }
       :root[data-theme="dark"] { background: #1B1A18; }
     </style>
-    <title>块编辑器</title>
+    <title>AIBlock 块编辑器</title>
   </head>
   <body>
     <div id="root"></div>

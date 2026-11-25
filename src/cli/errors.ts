@@ -22,11 +22,11 @@ export class CliError extends Error {
   }
 }
 
-export function usageError(message: string, hint = '运行 lark-doc --help 查看用法。') {
+export function usageError(message: string, hint = '运行 aiblock-doc --help 查看用法。') {
   return new CliError('usage', message, hint)
 }
 
-export function notFoundError(message: string, hint = '先用 lark-doc list 获取页面 ID。') {
+export function notFoundError(message: string, hint = '先用 aiblock-doc list 获取页面 ID。') {
   return new CliError('not_found', message, hint)
 }
 

@@ -3,6 +3,7 @@ import { existsSync } from 'node:fs'
 import { readFile } from 'node:fs/promises'
 import { homedir } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
+import { appSlug } from '../app-identity'
 import { assignMissingBlockIds } from '../editor/extensions/block-id'
 import { docToMarkdown, markdownToDoc } from '../editor/markdown/markdown-codec'
 import { createDocumentSchema } from '../editor/schema'
@@ -18,15 +19,15 @@ export const defaultPageIcon = '📄'
 export const workspaceSchema = createDocumentSchema()
 
 export function defaultUserDataRoot() {
-  if (process.platform === 'darwin') return join(homedir(), 'Library', 'Application Support', 'lark-block-editor')
+  if (process.platform === 'darwin') return join(homedir(), 'Library', 'Application Support', appSlug)
   if (process.platform === 'win32') {
-    return join(process.env.APPDATA ?? join(homedir(), 'AppData', 'Roaming'), 'lark-block-editor')
+    return join(process.env.APPDATA ?? join(homedir(), 'AppData', 'Roaming'), appSlug)
   }
-  return join(process.env.XDG_CONFIG_HOME ?? join(homedir(), '.config'), 'lark-block-editor')
+  return join(process.env.XDG_CONFIG_HOME ?? join(homedir(), '.config'), appSlug)
 }
 
 export function resolveWorkspacePath(input?: string) {
-  const value = input ?? process.env.LARK_WORKSPACE
+  const value = input ?? process.env.AIBLOCK_WORKSPACE
   return value ? resolve(value) : join(defaultUserDataRoot(), 'workspace')
 }
 
@@ -74,7 +75,7 @@ function nextOrder(index: WorkspaceIndex, parentId: string | null) {
 }
 
 function requireIndex(index: WorkspaceIndex | null): WorkspaceIndex {
-  if (!index) throw notFoundError('工作区尚未初始化。', '先运行 lark-doc create 创建第一页。')
+  if (!index) throw notFoundError('工作区尚未初始化。', '先运行 aiblock-doc create 创建第一页。')
   return index
 }
 
@@ -104,7 +105,7 @@ export async function listPages(files: WorkspaceFiles) {
 export async function getPage(files: WorkspaceFiles, id: string, format: 'markdown' | 'json') {
   if (!isPageId(id)) throw notFoundError(`页面 ID 无效：${id}`)
   const index = await files.readIndexSnapshot()
-  if (!index.value) throw notFoundError('工作区尚未初始化。', '先运行 lark-doc create 创建第一页。')
+  if (!index.value) throw notFoundError('工作区尚未初始化。', '先运行 aiblock-doc create 创建第一页。')
   const page = findIndexPage(index.value, id)
   const snapshot = await files.readPageSnapshot(id)
   if (!snapshot.value) throw notFoundError(`页面不存在：${id}`)

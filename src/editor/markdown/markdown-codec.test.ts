@@ -274,7 +274,7 @@ describe('block images in Markdown', () => {
   // @partition source and layout: external URLs, asset aliases and HTML dimensions
   it('keeps safe URLs and local asset IDs while preserving image blocks in mixed text', () => {
     const id = 'a'.repeat(64) + '.png'
-    const source = 'Before ![figure](https://example.test/a.png?q=1&v=2) after.\n\n![local](lark-asset://media/' + id + ')'
+    const source = 'Before ![figure](https://example.test/a.png?q=1&v=2) after.\n\n![local](aiblock-asset://media/' + id + ')'
     const schema = editor('').schema
     const doc = markdownToDoc(schema, source)
     expect(doc.children.map(node => node.type.name)).toEqual(['paragraph', 'imageBlock', 'paragraph', 'imageBlock'])

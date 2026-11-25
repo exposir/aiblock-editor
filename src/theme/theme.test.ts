@@ -54,7 +54,7 @@ describe('theme preference', () => {
 
   it('reads the public storage key and writes each explicit preference', () => {
     systemPreference(true)
-    const key = ['lark-block-editor', 'theme', 'v1'].join('.')
+    const key = ['aiblock-editor', 'theme', 'v1'].join('.')
     expect(readThemeMode(window)).toBe('system')
     localStorage.setItem(key, 'light')
     expect(readThemeMode(window)).toBe('light')

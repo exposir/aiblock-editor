@@ -14,15 +14,15 @@ export interface CliIO {
   cwd?: string
 }
 
-const helpText = `lark-doc — 操作本地 lark-block-editor 桌面工作区
+const helpText = `aiblock-doc — 操作本地 aiblock-editor 桌面工作区
 
 用法:
-  lark-doc list
-  lark-doc get <page-id> [--format markdown|json]
-  lark-doc create --title <title> [--parent <page-id>] [--icon <emoji>] [--markdown -|<file>] [--activate]
-  lark-doc append <page-id> --if-match <etag> [--markdown -|<file>]
-  lark-doc rename <page-id> --title <title> --if-match <index-etag>
-  lark-doc delete <page-id> --if-match <index-etag>
+  aiblock-doc list
+  aiblock-doc get <page-id> [--format markdown|json]
+  aiblock-doc create --title <title> [--parent <page-id>] [--icon <emoji>] [--markdown -|<file>] [--activate]
+  aiblock-doc append <page-id> --if-match <etag> [--markdown -|<file>]
+  aiblock-doc rename <page-id> --title <title> --if-match <index-etag>
+  aiblock-doc delete <page-id> --if-match <index-etag>
 
 全局参数:
   --workspace <dir>   工作区目录（含 index.json）；默认 Electron userData/workspace
@@ -35,10 +35,10 @@ const helpText = `lark-doc — 操作本地 lark-block-editor 桌面工作区
   退出码: 0 成功, 1 I/O/未知, 2 参数, 3 页面不存在, 4 版本冲突, 5 内容/格式
 
 示例:
-  LARK_WORKSPACE=~/Library/Application\\ Support/lark-block-editor/workspace lark-doc list
-  lark-doc get 430e9296-6acb-4b74-84c3-a4bd05a20701
-  printf '# 会议记录\\n\\n- 结论\\n' | lark-doc create --title '会议记录' --markdown - --activate
-  lark-doc append <page-id> --if-match <etag> --markdown notes.md
+  AIBLOCK_WORKSPACE=~/Library/Application\\ Support/aiblock-editor/workspace aiblock-doc list
+  aiblock-doc get 430e9296-6acb-4b74-84c3-a4bd05a20701
+  printf '# 会议记录\\n\\n- 结论\\n' | aiblock-doc create --title '会议记录' --markdown - --activate
+  aiblock-doc append <page-id> --if-match <etag> --markdown notes.md
 `
 
 function defaultIO(): CliIO {

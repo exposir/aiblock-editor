@@ -274,7 +274,7 @@ export const MultiBlockSelectionExtension = Extension.create({
           const decorations: Decoration[] = []
           let pos = selection.from
           for (const block of selection.blockRange.blocks) {
-            decorations.push(Decoration.node(pos, pos + block.nodeSize, { class: 'lark-block-selected' }))
+            decorations.push(Decoration.node(pos, pos + block.nodeSize, { class: 'aiblock-block-selected' }))
             pos += block.nodeSize
           }
           return DecorationSet.create(doc, decorations)

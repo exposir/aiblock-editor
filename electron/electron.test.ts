@@ -65,7 +65,7 @@ describe('desktop window state', () => {
 describe('desktop navigation policy', () => {
   // @partition navigation: document, external links and denied paths
   // @partition development: only the local Vite server can host the bridge
-  const file = 'file:///Applications/Lark%20Block%20Editor.app/Contents/Resources/app.asar/dist/index.html'
+  const file = 'file:///Applications/AIBlock%20Editor.app/Contents/Resources/app.asar/dist/index.html'
 
   it('recognizes only the loaded document and allows its page and block fragments', () => {
     const hash = `${file}#page=alpha&block=beta`
@@ -102,7 +102,7 @@ describe('desktop navigation policy', () => {
 })
 
 async function profile() {
-  const directory = await mkdtemp(join(tmpdir(), 'lark-editor-test-'))
+  const directory = await mkdtemp(join(tmpdir(), 'aiblock-editor-test-'))
   onTestFinished(() => rm(directory, { recursive: true, force: true }))
   return {
     directory, legacyPath: join(directory, 'workspace.json'),
@@ -243,7 +243,7 @@ describe('desktop image assets', () => {
     expect(first).toMatchObject({ id: expect.stringMatching(/^[a-f0-9]{64}\.png$/), mime: 'image/png', width: 1, height: 1,
       byteLength: image.bytes.byteLength, name: image.name })
     expect(await readdir(join(directory, 'workspace', 'assets'))).toEqual([first.id, first.id + '.json'])
-    const url = `lark-asset://media/${first.id}`
+    const url = `aiblock-asset://media/${first.id}`
     const response = await assets.respond(new Request(url))
     expect(response.status).toBe(200)
     expect(response.headers.get('Content-Type')).toBe('image/png')
@@ -263,11 +263,11 @@ describe('desktop image assets', () => {
     const assets = createImageAssetFiles(directory)
     const input = testImage()
     const image = await assets.save(input)
-    const url = `lark-asset://media/${image.id}`
+    const url = `aiblock-asset://media/${image.id}`
     for (const [application, origin, allowed] of [
-      ['file:///Applications/Lark.app/dist/index.html', 'null', 'null'],
-      ['file:///Applications/Lark.app/dist/index.html', 'file://', 'file://'],
-      ['file:///Applications/Lark.app/dist/index.html', 'https://foreign.test', null],
+      ['file:///Applications/AIBlock%20Editor.app/dist/index.html', 'null', 'null'],
+      ['file:///Applications/AIBlock%20Editor.app/dist/index.html', 'file://', 'file://'],
+      ['file:///Applications/AIBlock%20Editor.app/dist/index.html', 'https://foreign.test', null],
       ['http://127.0.0.1:58261/', 'http://127.0.0.1:58261', 'http://127.0.0.1:58261'],
       ['http://127.0.0.1:58261/', 'http://127.0.0.1:58262', null],
     ] as const) {
@@ -293,11 +293,11 @@ describe('desktop image assets', () => {
     await expect(assets.remove(['../../index.json'])).rejects.toThrow('Invalid asset IDs')
     const id = '0'.repeat(64) + '.png'
     const paths = [
-      `lark-asset://elsewhere/${id}`, `lark-asset://name@media/${id}`, `lark-asset://media:30/${id}`,
-      `lark-asset://media/%2e%2e%2f${id}`, `lark-asset://media/../${id}`, `lark-asset://media/${id}?q=1`,
-      `lark-asset://media/${id}#x`, `lark-asset://media/${id}\n`, `lark-asset://media/${id}.svg`,
+      `aiblock-asset://elsewhere/${id}`, `aiblock-asset://name@media/${id}`, `aiblock-asset://media:30/${id}`,
+      `aiblock-asset://media/%2e%2e%2f${id}`, `aiblock-asset://media/../${id}`, `aiblock-asset://media/${id}?q=1`,
+      `aiblock-asset://media/${id}#x`, `aiblock-asset://media/${id}\n`, `aiblock-asset://media/${id}.svg`,
     ]
     for (const url of paths) expect(assetRequestId(url)).toBeNull()
-    expect(decideNavigation(`lark-asset://media/${id}`, 'file:///app/index.html')).toEqual({ kind: 'deny' })
+    expect(decideNavigation(`aiblock-asset://media/${id}`, 'file:///app/index.html')).toEqual({ kind: 'deny' })
   })
 })

@@ -8,3 +8,9 @@ allowBuilds:
   electron-winstaller: false
 overrides:
   'jsdom@25.0.1>cssstyle': 4.1.0
+peerDependencyRules:
+  # VitePress uses Vue and local search. Its unused DocSearch adapter declares React <19.
+  allowedVersions:
+    '@docsearch/react@3.8.2>react': '19'
+    '@docsearch/react@3.8.2>react-dom': '19'
+    '@docsearch/react@3.8.2>@types/react': '19'

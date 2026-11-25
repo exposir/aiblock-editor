@@ -2,7 +2,7 @@ import { WORKSPACE_STORAGE_KEY } from './page-store'
 import { isPageId, isWorkspaceCommit, isWorkspaceIndex, splitLegacyWorkspace } from './workspace-format'
 import type { PageShard, WorkspaceCommit, WorkspaceIndex, WorkspacePersistence } from './workspace-format'
 
-const databaseName = 'lark-block-editor'
+const databaseName = 'aiblock-editor'
 const indexKey = 'workspace'
 const fallbackIndex = `${WORKSPACE_STORAGE_KEY}.v2.index`
 const fallbackPage = (id: string) => `${WORKSPACE_STORAGE_KEY}.v2.page.${id}`

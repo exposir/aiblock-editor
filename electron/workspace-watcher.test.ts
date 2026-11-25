@@ -38,7 +38,7 @@ async function until<T>(probe: () => T | undefined, message: string, timeout = 4
 
 describe('Electron workspace watcher', { skip: process.platform === 'linux' }, () => {
   it('pushes external changes once and suppresses the app’s own writes', async () => {
-    const directory = await mkdtemp(join(tmpdir(), 'lark-watch-'))
+    const directory = await mkdtemp(join(tmpdir(), 'aiblock-watch-'))
     directories.push(directory)
     const files = openWorkspaceFiles(directory)
     await files.commit({ index: index(), pages: [shard('初稿')], removedPageIds: [] })

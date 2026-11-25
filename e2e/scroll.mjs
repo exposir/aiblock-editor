@@ -13,7 +13,7 @@ const url = process.argv[2]
 assert.ok(url, 'Pass the URL of a running Vite server')
 const binary = process.env.CHROME_BIN ?? (process.platform === 'darwin'
   ? '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome' : 'chromium')
-const profile = await mkdtemp(join(tmpdir(), 'lark-scroll-'))
+const profile = await mkdtemp(join(tmpdir(), 'aiblock-scroll-'))
 const chrome = spawn(binary, [
   '--headless', '--window-size=1440,900', '--remote-debugging-port=0',
   '--no-first-run', '--no-default-browser-check', '--user-data-dir=' + profile, 'about:blank',

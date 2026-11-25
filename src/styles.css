@@ -758,13 +758,13 @@ html[data-desktop-platform='darwin'] .workspace-header :is(a, button, input, sel
   background-color: var(--block-background);
 }
 
-.document-editor [data-block-bg].lark-block-selected,
-.document-editor .lark-block-selected > .callout {
+.document-editor [data-block-bg].aiblock-block-selected,
+.document-editor .aiblock-block-selected > .callout {
   background-color: var(--block-selection);
   border-radius: 6px;
 }
 
-.document-editor .lark-block-selected {
+.document-editor .aiblock-block-selected {
   outline: 1px solid var(--block-selection-line);
   outline-offset: -1px;
 }

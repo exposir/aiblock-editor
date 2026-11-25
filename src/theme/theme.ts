@@ -2,7 +2,7 @@ export const themeModes = ['system', 'light', 'dark'] as const
 export type ThemeMode = typeof themeModes[number]
 export type ResolvedTheme = 'light' | 'dark'
 
-export const THEME_STORAGE_KEY = 'lark-block-editor.theme.v1'
+export const THEME_STORAGE_KEY = 'aiblock-editor.theme.v1'
 export const THEME_MEDIA_QUERY = '(prefers-color-scheme: dark)'
 export const themeLabels: Record<ThemeMode, string> = { system: '跟随系统', light: '浅色', dark: '深色' }
 export const themeBackgrounds: Record<ResolvedTheme, string> = { light: '#F5F4EF', dark: '#1B1A18' }

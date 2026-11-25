@@ -1,4 +1,4 @@
-import { isAssetId } from '../../workspace/asset-format'
+import { imageAssetUrlPrefix, isAssetId } from '../../workspace/asset-format'
 
 export interface ImageAttributes {
   assetId: string | null
@@ -13,7 +13,7 @@ export interface ImageAttributes {
 export function imageSource(value: unknown): Pick<ImageAttributes, 'assetId' | 'src'> | null {
   if (typeof value !== 'string' || /[\u0000-\u0020\u007f]/.test(value)) return null
   const id = value.startsWith('asset:') ? value.slice(6) :
-    value.startsWith('lark-asset://media/') ? value.slice('lark-asset://media/'.length) : null
+    value.startsWith(imageAssetUrlPrefix) ? value.slice(imageAssetUrlPrefix.length) : null
   if (isAssetId(id)) return { assetId: id, src: null }
   const authority = /^https?:\/\/([^/?#]+)/i.exec(value)?.[1]
   if (!authority || authority.includes('@') || value.includes('\\')) return null

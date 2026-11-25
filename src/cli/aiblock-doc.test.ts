@@ -8,7 +8,7 @@ import type { CliIO } from './main'
 const directories: string[] = []
 
 async function tempWorkspace() {
-  const directory = await mkdtemp(join(tmpdir(), 'lark-cli-'))
+  const directory = await mkdtemp(join(tmpdir(), 'aiblock-cli-'))
   directories.push(directory)
   return directory
 }
@@ -51,7 +51,7 @@ afterEach(async () => {
   await Promise.all(directories.splice(0).map(directory => rm(directory, { recursive: true, force: true })))
 })
 
-describe('lark-doc CLI', () => {
+describe('aiblock-doc CLI', () => {
   it('lists, reads markdown and JSON, and creates pages with unique block IDs', async () => {
     const directory = await tempWorkspace()
     const dry = await cli(directory, ['create', '--title', '预览页', '--dry-run'])

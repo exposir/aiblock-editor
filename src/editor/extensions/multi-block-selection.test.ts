@@ -31,11 +31,11 @@ describe('MultiBlockSelection', () => {
     const instance = editor('<blockquote><p>A</p><p>B</p></blockquote><p>C</p>')
     key(instance, 'Escape')
     expect(selected(instance)).toEqual(['A'])
-    expect(instance.view.dom.querySelector('.lark-block-selected')?.textContent).toBe('A')
+    expect(instance.view.dom.querySelector('.aiblock-block-selected')?.textContent).toBe('A')
     key(instance, 'Escape')
     expect(instance.state.selection).toBeInstanceOf(TextSelection)
     expect(instance.state.selection.$head.parent.textContent).toBe('A')
-    expect(instance.view.dom.querySelector('.lark-block-selected')).toBeNull()
+    expect(instance.view.dom.querySelector('.aiblock-block-selected')).toBeNull()
   })
 
   it('keyboard: Shift+Arrow extends and shrinks from the head in both directions', () => {

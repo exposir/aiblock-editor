@@ -11,7 +11,7 @@ const idA = '11111111-1111-4111-8111-111111111111'
 const directories: string[] = []
 
 async function workspace() {
-  const directory = await mkdtemp(join(tmpdir(), 'lark-workspace-'))
+  const directory = await mkdtemp(join(tmpdir(), 'aiblock-workspace-'))
   directories.push(directory)
   return { directory, files: openWorkspaceFiles(directory) }
 }

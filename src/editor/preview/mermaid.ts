@@ -79,7 +79,7 @@ export function renderMermaid(source: string, dark: boolean, wanted = () => true
       if (!wanted()) return null
       // Mermaid's configuration is shared, so initialization and drawing must stay together.
       mermaid.initialize(mermaidConfig(dark))
-      const { svg } = await mermaid.render(`lark-diagram-${++diagramId}`, source)
+      const { svg } = await mermaid.render(`aiblock-diagram-${++diagramId}`, source)
       const diagram = { svg }
       if (key.length + svg.length <= maxCachedDiagramLength) {
         cache.set(key, diagram)

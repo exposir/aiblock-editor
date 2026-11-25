@@ -6,7 +6,7 @@ import { fileURLToPath } from 'node:url'
 const require = createRequire(import.meta.resolve('vite'))
 const { build } = require('esbuild')
 const root = fileURLToPath(new URL('..', import.meta.url))
-const outfile = resolve(root, 'dist-cli/lark-doc.mjs')
+const outfile = resolve(root, 'dist-cli/aiblock-doc.mjs')
 
 export async function buildCli() {
   await build({

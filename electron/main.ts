@@ -1,9 +1,12 @@
 import { app, BrowserWindow, dialog, ipcMain, Menu, nativeTheme, protocol, screen, shell } from 'electron'
 import type { IpcMainEvent, IpcMainInvokeEvent, MenuItemConstructorOptions } from 'electron'
 import { randomUUID } from 'node:crypto'
-import { join } from 'node:path'
+import { mkdirSync } from 'node:fs'
+import { join, resolve } from 'node:path'
 import { pathToFileURL } from 'node:url'
+import { appSlug } from '../src/app-identity.js'
 import { desktopChannels as channels, suggestedFileName } from '../src/desktop/bridge.js'
+import { imageAssetScheme } from '../src/workspace/asset-format.js'
 import type { WorkspaceCloseResult, WorkspaceCommitOptions, WorkspaceExternalChange } from '../src/workspace/workspace-format.js'
 import type { DesktopMenuCommand } from '../src/desktop/bridge.js'
 import { isThemeMode, parseThemeMode, themeBackgrounds, themeLabels, themeModes } from '../src/theme/theme.js'
@@ -18,7 +21,7 @@ import { minimumWindowSize, parseWindowState, restoreWindowState } from './windo
 const isMac = process.platform === 'darwin'
 const productionPage = pathToFileURL(join(app.getAppPath(), 'dist', 'index.html')).href
 function rendererUrl() {
-  const dev = app.isPackaged ? undefined : process.env.LARK_EDITOR_DEV_URL
+  const dev = app.isPackaged ? undefined : process.env.AIBLOCK_EDITOR_DEV_URL
   if (dev === undefined) return productionPage
   const url = developmentUrl(dev)
   if (!url) throw new Error('Electron development requires a loopback Vite URL')
@@ -328,7 +331,12 @@ async function createWindow(
   }
 }
 
-protocol.registerSchemesAsPrivileged([{ scheme: 'lark-asset', privileges: { standard: true, secure: true, supportFetchAPI: true, corsEnabled: true } }])
+const profileOverride = app.commandLine.getSwitchValue('user-data-dir')
+const userData = profileOverride ? resolve(profileOverride) : join(app.getPath('appData'), appSlug)
+mkdirSync(userData, { recursive: true })
+app.setPath('userData', userData)
+
+protocol.registerSchemesAsPrivileged([{ scheme: imageAssetScheme, privileges: { standard: true, secure: true, supportFetchAPI: true, corsEnabled: true } }])
 
 if (app.requestSingleInstanceLock()) {
   app.on('before-quit', () => { quitting = true; workspaceWatcher?.close() })
@@ -346,7 +354,7 @@ if (app.requestSingleInstanceLock()) {
     })
     workspaceWatcher = watcher
     const assets = createImageAssetFiles(directory)
-    protocol.handle('lark-asset', request => assets.respond(request, appUrl))
+    protocol.handle(imageAssetScheme, request => assets.respond(request, appUrl))
     const statePath = join(directory, 'window-state.json')
     const themePath = join(directory, 'theme')
     nativeTheme.themeSource = parseThemeMode(await readOptionalText(themePath).catch(() => null))

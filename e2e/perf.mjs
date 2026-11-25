@@ -13,7 +13,7 @@ const url = process.argv[2]
 assert.ok(url, 'Pass the URL of a running Vite server')
 const binary = process.env.CHROME_BIN ?? (process.platform === 'darwin'
   ? '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome' : 'chromium')
-const profile = await mkdtemp(join(tmpdir(), 'lark-perf-'))
+const profile = await mkdtemp(join(tmpdir(), 'aiblock-perf-'))
 const chrome = spawn(binary, [
   '--headless', '--window-size=1440,900', '--remote-debugging-port=0',
   '--no-first-run', '--no-default-browser-check', '--user-data-dir=' + profile, 'about:blank',
@@ -252,7 +252,7 @@ async function seedAndOpen(mode) {
     function countNodes(node) { return 1 + (node.content ?? []).reduce((count, child) => count + countNodes(child), 0) }
     const id = crypto.randomUUID()
     const db = await new Promise((resolve, reject) => {
-      const open = indexedDB.open('lark-block-editor')
+      const open = indexedDB.open('aiblock-editor')
       open.onsuccess = () => resolve(open.result)
       open.onerror = () => reject(open.error)
     })
@@ -425,7 +425,7 @@ async function imageSample() {
   await openPage('文档协作与发布手册')
   await until(() => page(async id => {
     const db = await new Promise(resolve => {
-      const request = indexedDB.open('lark-block-editor')
+      const request = indexedDB.open('aiblock-editor')
       request.onsuccess = () => resolve(request.result)
     })
     try {

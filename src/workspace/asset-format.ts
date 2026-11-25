@@ -22,6 +22,8 @@ export interface ImageAssetMetadata {
 }
 
 export const maxImageBytes = 32 * 1024 * 1024
+export const imageAssetScheme = 'aiblock-asset'
+export const imageAssetUrlPrefix = `${imageAssetScheme}://media/`
 
 export function isAssetId(value: unknown): value is string {
   return typeof value === 'string' && /^[a-f0-9]{64}\.(png|jpg|gif|webp)(?![\s\S])/.test(value)

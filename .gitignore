@@ -6,3 +6,5 @@ coverage/
 dist-electron/
 release/
 dist-cli/
+docs/.vitepress/cache/
+docs/.vitepress/dist/

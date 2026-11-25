@@ -43,7 +43,7 @@ try {
       cwd: root,
       detached: process.platform !== 'win32',
       stdio: ['pipe', 'inherit', 'inherit'],
-      env: { ...process.env, LARK_EDITOR_DEV_URL: url },
+      env: { ...process.env, AIBLOCK_EDITOR_DEV_URL: url },
     })
     child.stdin.on('error', () => { /* The app can exit while the shutdown pipe is closing. */ })
     process.exitCode = await new Promise((resolve, reject) => {

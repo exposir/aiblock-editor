@@ -133,7 +133,7 @@ describe('desktop capabilities', () => {
     await expect(assets.saveImageAsset(image)).resolves.toEqual(metadata)
     expect(bridge.saveImageAsset).toHaveBeenCalledWith(image)
     bridge.readImageAssets.mockResolvedValueOnce([metadata]).mockResolvedValueOnce([null])
-    await expect(assets.resolveAssetUrl(metadata.id)).resolves.toBe(`lark-asset://media/${metadata.id}`)
+    await expect(assets.resolveAssetUrl(metadata.id)).resolves.toBe(`aiblock-asset://media/${metadata.id}`)
     assets.releaseAssetUrl(metadata.id)
     await expect(assets.resolveAssetUrl(metadata.id)).resolves.toBeNull()
     await expect(assets.resolveAssetUrl('../index.json')).rejects.toThrow('Invalid asset IDs')
