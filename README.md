@@ -1,146 +1,91 @@
+<img src="docs/public/logo.svg" width="64" height="64" alt="AIBlock Editor 图标">
+
 # AIBlock Editor
 
-面向长文档与本地知识库的块级编辑器（Web、macOS Electron 桌面端与本地 CLI）。
+用块组织长文档的本地编辑器，支持浏览器、macOS 桌面端和面向 AI 工具的 CLI。
 
-基于 TipTap 3、ProseMirror、React 19、TypeScript（strict）、Vite 7 与 Electron 45 构建，核心编辑体验保持零 `contenteditable` 内置交互控件、按页分片存储、资产二进制分离，并提供与桌面工作区实时热同步的 `aiblock-doc` CLI 与 `SKILL.md`。
+[![在线文档](https://img.shields.io/badge/文档-在线阅读-C96442)](https://exposir.github.io/aiblock-editor/)
+[![Docs Deploy](https://github.com/exposir/aiblock-editor/actions/workflows/deploy-docs.yml/badge.svg)](https://github.com/exposir/aiblock-editor/actions/workflows/deploy-docs.yml)
+[![MIT License](https://img.shields.io/badge/License-MIT-blue)](LICENSE)
+[![Node.js >=22.12](https://img.shields.io/badge/Node.js-%E2%89%A522.12-43853d)](https://nodejs.org/)
 
-部署后可阅读[在线文档](https://exposir.github.io/aiblock-editor/)。本地可查阅[仓内快速开始](docs/guide/getting-started.md)。
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/public/images/editor-dark.png">
+  <source media="(prefers-color-scheme: light)" srcset="docs/public/images/editor-light.png">
+  <img src="docs/public/images/editor-light.png" width="1440" height="900" alt="AIBlock Editor 的页面树、正文和评论侧栏">
+</picture>
 
----
+## 能做什么
 
-## 核心能力
-
-- **块级编辑与排版**
-  - 六大核心扩展：全局唯一 `blockId` 与大纲提取、容器块（Callout 提示块 / Toggle 折叠块 / 最多 5 列可拖拽调宽 ColumnList 且单列自动解包）、4 向拖拽与边缘自动建栏、多块选区与框选、支持中文拼音检索的 `/` 斜杠菜单与划词悬浮工具条、增强表格与代码块。
-  - **Markdown 双向编解码**：支持粘贴自动识别、导入/导出 `.md` 与 JSON，覆盖标题、嵌套列表、任务列表、表格、公式、图表、图片及自定义块语法（折叠块、提示块和多栏）。
-  - **图表与公式（对齐 GitHub 能力）**：支持 Mermaid 全图种（按需加载、`securityLevel: 'strict'`、Preview/Split/Code 三视图、6 套常用模板与 SVG 导出）以及 KaTeX 行内 `$...$` / 块级 `$$...$$` / ```` ```math ```` 公式。
-  - **批量贴图与资产分离**：支持剪贴板多图粘贴（单批最多 200 张）、文档拖放、`/图片`、安全 HTML 与 Markdown 往返；单次原子事务支持一步 `Ctrl+Z` 整批撤销。图片按 SHA-256 去重落盘（PNG/JPEG/GIF/WebP，单张上限 32 MiB），严禁 Base64 进正文 JSON；粘贴前先预检魔数与二进制头尺寸并用 `aspect-ratio` 锁定高度，近视口（`±800px`）异步解码，离屏自动卸载并回收租约。
-- **多页面工作区与深色模式**
-  - 支持多级嵌套页面树、面包屑导航、大纲目录跳转与划词评论侧栏。
-  - 支持浅色 / 暖炭黑深色 / 跟随系统三态无闪烁切换，桌面端同步 macOS `nativeTheme` 与窗口背景色。
-- **超大文档性能优化**
-  - **外层按页分片**：工作区拆为轻量索引（`index.json`）+ 按页正文分片（`pages/<uuid>.json`）+ 二进制资产库（`assets/<sha256>.<ext>`）；Web 端使用 IndexedDB（自动迁移旧 `localStorage`），桌面端按文件原子写盘，保存与改标题仅落脏页/索引。
-  - **内层视口懒加载与增量热路径**：浮层控件、代码工具条、Mermaid 与 `InlineMath` 均受 `IntersectionObserver` 视口门控；长代码块（超过 120 行或 4096 个文本字符）走内联 Blob Worker 异步高亮；Overlay 同帧 Read→Write 批处理；`hitBlock` 采用 Y 轴排序前缀 `maxBottom` 二分查找。
-- **AI 友好（CLI + Skill + 热同步）**
-  - 提供纯 Node 单文件 CLI `aiblock-doc`，与桌面端共享跨进程文件锁（`.lock`）及内容 SHA-256 `etag` 乐观并发检查。
-  - Electron 主进程通过 150ms 防抖 `fs.watch` 与窗口焦点对账感知外部改动：干净页自动热刷新（支持 `--activate` 实时切页），脏页/脏标题绝不静默覆盖并展示冲突处理条。
-
----
+- **用块排版。** 拖动单块或多块来重排，用提示块、折叠块和分栏组织内容。输入 `/` 或 `、`，用中文、拼音或英文找块。
+- **管理多页笔记。** 用页面树归类，用大纲跳到段落，用划词评论记录上下文。支持浅色、深色与跟随系统。
+- **用 Markdown 交换内容。** 读取、导出或复制整页 Markdown，也能直接把符合 Markdown 结构的纯文本粘贴成块。
+- **在文档里画图和写公式。** 预览 Mermaid 图表和 KaTeX 公式，切换源码和预览视图，也可把图表导出为 SVG。
+- **批量贴图。** 一次最多插入 200 张 PNG、JPEG、GIF 或 WebP，整批可以一步撤销。
+- **从终端编辑桌面文档。** 用 `aiblock-doc` 读取页面、创建笔记或追加 Markdown。打开的桌面端能感知变更，并会提示写入冲突。
 
 ## 快速开始
 
-环境要求：Node.js `^22.12.0 || ^24.0.0 || >=26.0.0`，`pnpm`（推荐 `pnpm@12`）。
+需要 Node.js `^22.12.0 || ^24.0.0 || >=26.0.0` 和 pnpm 12。
 
-```bash
-# 安装依赖
-pnpm install
-
-# Web 开发（默认 http://localhost:5173/）
-pnpm dev
-
-# Electron 桌面端开发联动
-pnpm electron:dev
-
-# 构建 Web 与 Electron 主进程产物
-pnpm electron:build
-
-# 打包 macOS 桌面应用（产物位于 release/mac-arm64/AIBlock Editor.app）
-pnpm electron:pack
-
-# 构建单文件 CLI（产物位于 dist-cli/aiblock-doc.mjs）
-pnpm cli:build
-```
-
----
-
-## `aiblock-doc` CLI 与 Agent Skill
-
-CLI 采用统一 JSON 契约（成功写入 stdout：`{"ok":true,"data":...}`，失败写入 stderr：`{"ok":false,"error":{...}}`），语义退出码：`0` 成功、`1` I/O、`2` 参数错误、`3` 不存在、`4` `etag`/锁冲突、`5` 格式校验失败。
-
-工作区解析顺序：`--workspace <dir>` → `$AIBLOCK_WORKSPACE` → 默认桌面端 `userData/workspace`（macOS 为 `~/Library/Application Support/aiblock-editor/workspace`）。
-
-```bash
-# 列出页面树与当前 indexEtag
-pnpm cli -- list
-
-# 读取单页 Markdown 与页面 etag
-pnpm cli -- get <page-id>
-
-# 从 stdin 创建并立即在已打开的桌面窗口激活展示
-printf '### 结论\n\n- 已完成验证\n' | pnpm cli -- create --title '会议记录' --icon '📝' --markdown - --activate
-
-# 带乐观锁在页尾追加 Markdown（支持 --dry-run 预检）
-pnpm cli -- append <page-id> --if-match <etag> --markdown notes.md
-
-# 重命名或删除页面（使用 indexEtag 防止并发误改）
-pnpm cli -- rename <page-id> --title '新标题' --if-match <index-etag>
-pnpm cli -- delete <page-id> --if-match <index-etag>
-```
-
-配套 Agent Skill 位于 [`skills/aiblock-doc/SKILL.md`](skills/aiblock-doc/SKILL.md)，包含工作流约束、退出码处理和安全红线，可直接挂载到支持 Agent Skills 的 AI 工具中使用。
-
----
-
-## 文档站
+敲下以下命令后，打开 Vite 输出的本地地址。页面树里有示例可直接打开。
 
 ```sh
-pnpm docs:dev      # 本地编辑与预览，默认端口 4174
-pnpm docs:build    # 构建到 docs/.vitepress/dist/
-pnpm docs:preview  # 预览构建产物
+git clone https://github.com/exposir/aiblock-editor.git && cd aiblock-editor
+pnpm install
+pnpm dev
 ```
 
-GitHub Pages 工作流部署地址为 `https://exposir.github.io/aiblock-editor/`。仓库的 Pages 来源需设为 GitHub Actions。
+开发桌面端时，从同一仓库运行以下命令，脚本会为 Electron 启动独立的 Vite 服务。
 
-## 测试与压测
+```sh
+pnpm electron:dev
+```
 
-```bash
-# 类型检查（前端 + Electron 主进程）
+用 `pnpm electron:pack` 生成可在本机运行的 macOS 应用包。Apple Silicon 的默认产物位于 `release/mac-arm64/AIBlock Editor.app`。有关数据目录和签名说明，见[快速开始](https://exposir.github.io/aiblock-editor/guide/getting-started)。
+
+## CLI 与 Agent Skill
+
+CLI 与桌面端共用工作区。macOS 的默认工作区是 `~/Library/Application Support/aiblock-editor/workspace`，也可用 `--workspace` 或 `AIBLOCK_WORKSPACE` 指定其他目录。浏览器工作区独立保存。
+
+```sh
+pnpm cli:build
+pnpm cli -- list
+pnpm cli -- get "$page_id"
+pnpm cli -- create --title '会议记录' --markdown notes.md
+```
+
+先从 `list` 结果取得页面 ID，再替换 `"$page_id"`。创建页面的示例从当前目录读取 `notes.md`。
+
+[Agent Skill](skills/aiblock-doc/SKILL.md) 说明如何让 AI 工具定位工作区、读写页面和处理版本冲突。[CLI 在线使用指南](https://exposir.github.io/aiblock-editor/guide/cli-and-skill)
+
+## 文档导航
+
+| 页面 | 内容 |
+| --- | --- |
+| [快速开始](https://exposir.github.io/aiblock-editor/guide/getting-started) | 选择 Web、桌面或 CLI，安装并运行 |
+| [块编辑与 Markdown](https://exposir.github.io/aiblock-editor/guide/blocks-and-markdown) | 排版、快捷键、导入导出、图表和公式 |
+| [CLI 与 Agent Skill](https://exposir.github.io/aiblock-editor/guide/cli-and-skill) | 安装、调用及桌面工作区同步 |
+| [架构与实测](https://exposir.github.io/aiblock-editor/guide/architecture) | 存储、编辑器浮层和 Chromium 测量 |
+| [开发与排查](https://exposir.github.io/aiblock-editor/guide/development) | 目录结构、类型检查、测试与压测 |
+| [CLI 参考](https://exposir.github.io/aiblock-editor/reference/cli-api) | 命令参数、JSON 输出和退出码 |
+
+## 本地验证
+
+```sh
 pnpm tsc --noEmit
-pnpm tsc --noEmit -p tsconfig.electron.json
-
-# 运行全量单元测试（Vitest + jsdom + fake-indexeddb）
 pnpm test
-
-# 覆盖率报告
-pnpm test:coverage
-
-# 浏览器级性能、百图与滚动验收脚本（需先 pnpm build）
-pnpm exec vite preview --host 127.0.0.1 --port 5197 --strictPort
-# 在另一终端执行
-node e2e/scroll.mjs http://127.0.0.1:5197/
-node e2e/perf.mjs http://127.0.0.1:5197/ --xl --images
+pnpm docs:build
 ```
 
----
+文档构建输出在 `docs/.vitepress/dist/`。运行 `pnpm docs:dev` 编辑和预览文档，运行 `pnpm docs:preview` 查看构建产物。完整验证步骤见[仓内开发指南](docs/guide/development.md)。
 
-## 目录结构
+## 反馈与贡献
 
-```text
-.
-├── build/                 # 应用图标矢量源文件与 macOS .icns / 1024px PNG
-├── docs/                  # VitePress 文档与 GitHub Pages 构建
-├── e2e/                   # 无头 Chromium 性能、滚动与画廊验收脚本
-├── electron/              # Electron 主进程、preload、安全策略、原子分片存储与外部变更监听
-├── public/                # 浏览器端精简 favicon.svg
-├── scripts/               # Electron 主进程、开发联动与 CLI esbuild 构建脚本
-├── skills/aiblock-doc/       # 供 AI Agent 调用的 aiblock-doc SKILL.md
-└── src/
-    ├── cli/               # 纯 Node CLI 入口、参数解析与工作区操作实现
-    ├── components/        # 大纲目录、评论侧栏等通用界面组件
-    ├── desktop/           # Web / Electron 双端桥接抽象层
-    ├── editor/
-    │   ├── components/    # Document-local Portal 浮层、视口观察与二分几何命中
-    │   ├── extensions/    # 六大核心块插件、ImageBlock、InlineMath、长代码 Worker 高亮
-    │   ├── markdown/      # Markdown 双向编解码、智能粘贴与文件导入导出
-    │   ├── preview/       # Mermaid / KaTeX 惰性渲染器
-    │   ├── schema/        # 零 DOM / 零 React 依赖的共享 ProseMirror Schema
-    │   └── views/         # 自定义 NodeView
-    ├── theme/             # 三态主题解析与持久化
-    └── workspace/         # v2 分片格式、IndexedDB 存储、SHA-256 资产库与状态钩子
-```
+提交问题时，附上 Web 或桌面端、系统和版本、复现步骤及预期结果。编辑问题可以附一小段可公开的 Markdown 示例。[GitHub Issues](https://github.com/exposir/aiblock-editor/issues)
 
----
+修改文档时，可从站点页面底部的「在 GitHub 上编辑此页」进入源文件。CLI 契约的修改集中在[参考原文](skills/aiblock-doc/references/cli-reference.md)。
 
 ## 许可
 
-本项目源码采用 [MIT License](LICENSE)。打包分发时注意 Electron/Chromium 运行时、Mermaid（含 `elkjs`）及 `electron-builder` 传递依赖各自的开源许可声明。
+项目源码采用 [MIT 许可证](LICENSE)。分发应用包时应保留运行时和第三方依赖各自要求的许可声明。

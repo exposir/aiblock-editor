@@ -36,3 +36,30 @@ features:
     details: 用六条命令操作桌面工作区。写操作带锁和版本校验，桌面端感知外部改动。
     link: /guide/cli-and-skill
 ---
+
+## 界面预览
+
+左侧页面树用于切换文档，正文里的标题、待办和分栏可以按块编辑。右侧是当前页的划词评论。
+
+<div class="showcase-frame light-only">
+
+![浅色界面的页面树、正文和评论侧栏](/images/editor-light.png)
+
+</div>
+
+<div class="showcase-frame dark-only">
+
+![深色界面的页面树、正文和评论侧栏](/images/editor-dark.png)
+
+</div>
+
+## 本地体验
+
+```sh
+git clone https://github.com/exposir/aiblock-editor.git
+cd aiblock-editor
+pnpm install
+pnpm dev
+```
+
+打开 Vite 输出的地址，从页面树进入示例文档。[环境要求与其他入口](/guide/getting-started)

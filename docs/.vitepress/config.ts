@@ -2,18 +2,32 @@ import { defineConfig } from 'vitepress'
 
 const base = '/aiblock-editor/'
 const repository = 'https://github.com/exposir/aiblock-editor'
+const site = `https://exposir.github.io${base}`
+const title = 'AIBlock Editor'
+const description = '用块组织长文档的本地编辑器，支持 Markdown、桌面工作区和 aiblock-doc CLI。'
 
 export default defineConfig({
   lang: 'zh-CN',
-  title: 'AIBlock Editor',
-  description: '本地块级文档编辑器，支持 Markdown、桌面工作区和 aiblock-doc CLI。',
+  title,
+  description,
   base,
+  lastUpdated: true,
   vite: { server: { port: 4174, strictPort: true } },
-  head: [['link', { rel: 'icon', type: 'image/svg+xml', href: `${base}favicon.svg` }]],
+  head: [
+    ['link', { rel: 'icon', type: 'image/svg+xml', href: `${base}favicon.svg` }],
+    ['meta', { property: 'og:type', content: 'website' }],
+    ['meta', { property: 'og:title', content: title }],
+    ['meta', { property: 'og:description', content: description }],
+    ['meta', { property: 'og:url', content: site }],
+    ['meta', { property: 'og:image', content: `${site}images/editor-light.png` }],
+  ],
   themeConfig: {
-    logo: { src: '/logo.svg', width: 34, height: 34, alt: 'AIBlock Editor' },
+    logo: { src: '/logo.svg', width: 34, height: 34, alt: title },
     nav: [
-      { text: '使用指南', link: '/guide/getting-started' },
+      { text: '快速开始', link: '/guide/getting-started' },
+      { text: 'CLI 与 Skill', link: '/guide/cli-and-skill' },
+      { text: '架构与实测', link: '/guide/architecture' },
+      { text: '开发与排查', link: '/guide/development' },
       { text: 'CLI 参考', link: '/reference/cli-api' },
     ],
     sidebar: [
@@ -24,11 +38,14 @@ export default defineConfig({
           { text: '块编辑与 Markdown', link: '/guide/blocks-and-markdown' },
           { text: 'CLI 与 Agent Skill', link: '/guide/cli-and-skill' },
           { text: '架构与实测', link: '/guide/architecture' },
+          { text: '开发与排查', link: '/guide/development' },
         ],
       },
       { text: '参考', items: [{ text: 'CLI 命令与 JSON 契约', link: '/reference/cli-api' }] },
     ],
     socialLinks: [{ icon: 'github', link: repository }],
+    editLink: { pattern: `${repository}/edit/main/docs/:path`, text: '在 GitHub 上编辑此页' },
+    lastUpdated: { text: '最后更新' },
     search: {
       provider: 'local',
       options: {

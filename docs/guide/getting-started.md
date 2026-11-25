@@ -1,12 +1,24 @@
 # 快速开始
 
-AIBlock Editor 提供浏览器编辑器、Electron 桌面端和面向桌面工作区的 `aiblock-doc` CLI。第一次打开编辑器时，可以在页面树里进入示例文档，也可以从空白页开始。
+| 入口 | 适合什么场景 | 数据存放位置 |
+| --- | --- | --- |
+| Web 端 | 在浏览器里试用或编辑文档 | 当前站点和浏览器配置对应的 IndexedDB |
+| Electron 桌面端 | 在 macOS 上编辑本地文档，或和 CLI 共用页面 | 应用用户数据目录下的 `workspace/` |
+| CLI | 从终端、脚本或 AI 工具读取、创建和追加文档 | 默认读写 Electron 桌面工作区，可显式指定其他路径 |
+
+第一次打开编辑器时，可以在页面树里进入示例文档，也可以从空白页开始。
 
 ## 环境要求
 
 - Node.js 版本范围为 `^22.12.0 || ^24.0.0 || >=26.0.0`，包管理器使用仓库声明的 `pnpm@12.21.0`。
-- 在仓库根目录执行 `pnpm install --frozen-lockfile`。Electron 安装脚本会下载与项目版本匹配的运行时。
 - 下文的桌面打包路径以 Apple Silicon macOS 为例。CLI 的独立构建产物只需要 Node.js。
+
+在终端克隆仓库并安装依赖。Electron 安装脚本会下载与项目版本匹配的运行时。
+
+```sh
+git clone https://github.com/exposir/aiblock-editor.git && cd aiblock-editor
+pnpm install --frozen-lockfile
+```
 
 ## Web 端
 
