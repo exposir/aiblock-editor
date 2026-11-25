@@ -1,12 +1,33 @@
 import type { Editor } from '@tiptap/core'
-import { useEffect, useMemo, useRef, useState } from 'react'
-import { useEditorDocument } from '../editor/components/editor-ui'
+import type { Node as ProseMirrorNode } from '@tiptap/pm/model'
+import { useEffect, useRef, useState } from 'react'
+import { useEditorSelector } from '../editor/components/editor-ui'
+import { subscribeOverlayLayout } from '../editor/components/overlay-layout'
 import { revealBlock } from '../editor/components/reveal-anchor'
 import { extractOutline } from '../editor/extensions/block-id'
+import type { OutlineEntry } from '../editor/types'
+
+const EMPTY: readonly OutlineEntry[] = []
+const labels = new WeakMap<ProseMirrorNode, readonly OutlineEntry[]>()
+
+function selectOutline(editor: Editor | null) {
+  if (!editor) return EMPTY
+  const doc = editor.state.doc
+  let entries = labels.get(doc)
+  if (!entries) {
+    entries = extractOutline(doc).filter(entry => entry.text.trim())
+    labels.set(doc, entries)
+  }
+  return entries
+}
+
+function sameLabels(a: readonly OutlineEntry[], b: readonly OutlineEntry[]) {
+  return a.length === b.length && a.every((entry, i) =>
+    entry.blockId === b[i]?.blockId && entry.text === b[i]?.text && entry.level === b[i]?.level)
+}
 
 export function OutlineSidebar({ editor }: { editor: Editor | null }) {
-  const doc = useEditorDocument(editor)
-  const outline = useMemo(() => doc ? extractOutline(doc).filter(entry => entry.text.trim()) : [], [doc])
+  const outline = useEditorSelector(editor, selectOutline, sameLabels)
   const [active, setActive] = useState<string | null>(null)
   const clicked = useRef<string | null>(null)
   const cancelReveal = useRef<(() => void) | undefined>(undefined)
@@ -15,29 +36,41 @@ export function OutlineSidebar({ editor }: { editor: Editor | null }) {
 
   useEffect(() => {
     if (!editor) return
-    const win = editor.view.dom.ownerDocument.defaultView
+    const root = editor.view.dom
+    const win = root.ownerDocument.defaultView
     if (!win) return
+    let headings: { id: string; top: number; bottom: number }[] = []
+    let scrollHeight = 0
     let frame = 0
     const refresh = () => {
       if (frame) return
       frame = win.requestAnimationFrame(() => {
         frame = 0
         if (editor.isDestroyed) return
+        const scrollY = win.scrollY
+        const viewportBottom = scrollY + win.innerHeight
         let closest: { id: string; top: number } | null = null
-        let first: string | null = null
         let lastVisible: string | null = null
-        for (const entry of outline) {
-          const element = editor.view.nodeDOM(entry.pos)
-          if (!(element instanceof HTMLElement) || element.closest('[inert]')) continue
-          first ??= entry.blockId
-          const { top, bottom } = element.getBoundingClientRect()
-          if (top <= 128 && (closest === null || top >= closest.top)) closest = { top, id: entry.blockId }
-          if (top < win.innerHeight && bottom >= 56) lastVisible = entry.blockId
+        for (const heading of headings) {
+          if (heading.top <= scrollY + 128 && (closest === null || heading.top >= closest.top)) closest = heading
+          if (heading.top < viewportBottom && heading.bottom >= scrollY + 56) lastVisible = heading.id
         }
-        const atBottom = win.scrollY > 0 && win.scrollY + win.innerHeight >= win.document.documentElement.scrollHeight - 2
+        const atBottom = scrollY > 0 && viewportBottom >= scrollHeight - 2
         const pinned = outline.some(entry => entry.blockId === clicked.current) ? clicked.current : null
-        setActive(pinned ?? (atBottom ? lastVisible : null) ?? closest?.id ?? first)
+        setActive(pinned ?? (atBottom ? lastVisible : null) ?? closest?.id ?? headings[0]?.id ?? null)
       })
+    }
+    const measure = (read: (element: Element) => DOMRect) => {
+      if (editor.isDestroyed) return
+      const scrollY = win.scrollY
+      scrollHeight = win.document.documentElement.scrollHeight
+      headings = selectOutline(editor).flatMap(entry => {
+        const element = editor.view.nodeDOM(entry.pos)
+        if (!(element instanceof HTMLElement) || element.closest('[inert]')) return []
+        const { top, bottom } = read(element)
+        return [{ id: entry.blockId, top: top + scrollY, bottom: bottom + scrollY }]
+      })
+      return refresh
     }
     const followScroll = () => {
       clicked.current = null
@@ -46,16 +79,16 @@ export function OutlineSidebar({ editor }: { editor: Editor | null }) {
     const followKeys = (event: KeyboardEvent) => {
       if (['PageUp', 'PageDown', 'Home', 'End', 'ArrowUp', 'ArrowDown'].includes(event.key)) followScroll()
     }
-    refresh()
-    win.addEventListener('scroll', refresh, { passive: true, capture: true })
-    win.addEventListener('resize', refresh)
+    const stopLayout = subscribeOverlayLayout(root, measure)
+    measure(element => element.getBoundingClientRect())?.()
+    win.addEventListener('scroll', refresh, { passive: true })
     win.addEventListener('wheel', followScroll, { passive: true })
     win.addEventListener('touchmove', followScroll, { passive: true })
     win.addEventListener('keydown', followKeys)
     return () => {
       win.cancelAnimationFrame(frame)
-      win.removeEventListener('scroll', refresh, true)
-      win.removeEventListener('resize', refresh)
+      stopLayout()
+      win.removeEventListener('scroll', refresh)
       win.removeEventListener('wheel', followScroll)
       win.removeEventListener('touchmove', followScroll)
       win.removeEventListener('keydown', followKeys)

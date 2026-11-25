@@ -154,7 +154,7 @@ describe('浏览器存储与页面地址', () => {
   it('storage: 恢复最后激活页、正文属性和全部评论', () => {
     const demo = createDemoWorkspace(schema)
     expect(demo.pages.map(page => page.title)).toEqual([
-      '文档协作与发布手册', '试点验收清单', '接口与发布规则', '架构设计备忘',
+      '文档协作与发布手册', '试点验收清单', '接口与发布规则', '架构设计备忘', '全图种与公式复杂示例',
     ])
     const workspace = activatePage(demo, demo.pages[1]!.id)
     expect(saveWorkspace(localStorage, workspace)).toBe(true)

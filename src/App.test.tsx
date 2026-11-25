@@ -186,6 +186,8 @@ describe('App 多页面集成', () => {
     expect(screen.queryByRole('dialog', { name: '重置示例工作区' })).not.toBeInTheDocument()
     await user.click(screen.getByRole('button', { name: '重置示例工作区' }))
     await user.click(screen.getByRole('button', { name: '确认重置' }))
+    expect(screen.getByText('5 个页面')).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: '全图种与公式复杂示例' })).toBeInTheDocument()
     await waitFor(() => expect(screen.getByRole('textbox', { name: '文档标题' })).toHaveValue('文档协作与发布手册'))
   })
 

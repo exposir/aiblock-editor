@@ -4,5 +4,7 @@ minimumReleaseAgeExclude:
 strictPeerDependencies: true
 allowBuilds:
   esbuild: true
+  electron: true
+  electron-winstaller: false
 overrides:
   'jsdom@25.0.1>cssstyle': 4.1.0

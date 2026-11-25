@@ -16,6 +16,7 @@ function editor(content: string) {
 
 afterEach(() => {
   for (const instance of editors.splice(0)) instance.destroy()
+  vi.unstubAllGlobals()
   vi.restoreAllMocks()
 })
 
@@ -53,17 +54,37 @@ describe('OutlineSidebar', () => {
     expect(positionOfBlockId(instance.state.doc, 'two')).not.toBeNull()
   })
 
-  it('scrolling: 滚轮清除点击固定，按可见位置恢复最近章节', async () => {
+  it('scrolling: 滚轮清除点击固定，页面滚动更新当前章节', async () => {
     const instance = editor('<h1 data-block-id="one">总览</h1><h2 data-block-id="two">发布安排</h2>')
-    const one = instance.view.nodeDOM(1) as HTMLElement
-    const two = instance.view.nodeDOM(instance.state.doc.firstChild!.nodeSize + 1) as HTMLElement
-    one.getBoundingClientRect = () => ({ top: -300, bottom: -200, left: 0, right: 0, width: 0, height: 100, x: 0, y: -300, toJSON() {} })
-    two.getBoundingClientRect = () => ({ top: 90, bottom: 190, left: 0, right: 0, width: 0, height: 100, x: 0, y: 90, toJSON() {} })
+    const one = instance.view.dom.querySelector('h1')!
+    const two = instance.view.dom.querySelector('h2')!
+    one.getBoundingClientRect = () => new DOMRect(0, 90 - window.scrollY, 300, 30)
+    two.getBoundingClientRect = () => new DOMRect(0, 650 - window.scrollY, 300, 30)
+    vi.spyOn(document.documentElement, 'scrollHeight', 'get').mockReturnValue(4000)
+    const user = userEvent.setup()
     render(<OutlineSidebar editor={instance} />)
-    await waitFor(() => expect(screen.getByRole('button', { name: '发布安排' })).toHaveAttribute('aria-current'))
-    expect(screen.getByRole('button', { name: '发布安排' })).toHaveAttribute('aria-current')
-    act(() => window.dispatchEvent(new WheelEvent('wheel')))
-    await waitFor(() => expect(screen.getByRole('button', { name: '发布安排' })).toHaveAttribute('aria-current'))
-    expect(screen.getByRole('button', { name: '发布安排' })).toHaveAttribute('aria-current')
+    const overview = screen.getByRole('button', { name: '总览' })
+    const release = screen.getByRole('button', { name: '发布安排' })
+    await user.click(release)
+    expect(release).toHaveAttribute('aria-current', 'location')
+    act(() => { window.dispatchEvent(new WheelEvent('wheel', { deltaY: -1 })) })
+    await waitFor(() => expect(overview).toHaveAttribute('aria-current', 'location'))
+    act(() => {
+      vi.stubGlobal('scrollY', 560)
+      window.dispatchEvent(new Event('scroll'))
+    })
+    await waitFor(() => expect(release).toHaveAttribute('aria-current', 'location'))
+  })
+
+  it('scrolling: 图表撑开正文时按新位置更新当前章节', async () => {
+    const instance = editor('<h1>总览</h1><p>图表预览</p><h2>发布安排</h2>')
+    const heading = instance.view.dom.querySelector('h2')!
+    const preview = instance.view.dom.querySelector('p')!
+    instance.view.dom.querySelector('h1')!.getBoundingClientRect = () => new DOMRect(0, 70, 300, 20)
+    heading.getBoundingClientRect = () => new DOMRect(0, preview.hasAttribute('data-expanded') ? 460 : 110, 300, 20)
+    render(<OutlineSidebar editor={instance} />)
+    await waitFor(() => expect(screen.getByRole('button', { name: '发布安排' })).toHaveAttribute('aria-current', 'location'))
+    preview.setAttribute('data-expanded', '')
+    await waitFor(() => expect(screen.getByRole('button', { name: '总览' })).toHaveAttribute('aria-current', 'location'))
   })
 })

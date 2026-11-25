@@ -4,6 +4,25 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <link rel="icon" href="data:," />
+    <meta name="color-scheme" content="light dark" />
+    <script>
+      // Keep this bootstrap synchronous so the page background matches its first frame.
+      (() => {
+        let mode = window.desktop?.initialTheme
+        if (mode == null) {
+          try { mode = localStorage.getItem('lark-block-editor.theme.v1') } catch {}
+        }
+        const resolved = mode === 'light' || mode === 'dark'
+          ? mode
+          : matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light'
+        document.documentElement.dataset.theme = resolved
+        document.documentElement.style.colorScheme = resolved
+      })()
+    </script>
+    <style>
+      :root { background: #F5F4EF; }
+      :root[data-theme="dark"] { background: #1B1A18; }
+    </style>
     <title>块编辑器</title>
   </head>
   <body>

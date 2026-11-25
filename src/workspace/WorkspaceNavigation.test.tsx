@@ -42,7 +42,8 @@ describe('WorkspaceNavigation', () => {
     expect(screen.getByRole('button', { name: '接口与发布规则' })).toBeInTheDocument()
     expect(screen.getByRole('button', { name: '架构设计备忘' })).toBeInTheDocument()
     expect(screen.getByRole('button', { name: '折叠「文档协作与发布手册」的子页' })).toHaveAttribute('aria-expanded', 'true')
-    expect(screen.getByText('4 个页面')).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: '全图种与公式复杂示例' })).toBeInTheDocument()
+    expect(screen.getByText('5 个页面')).toBeInTheDocument()
   })
 
   it('tree: 折叠父页隐藏子页，再次展开恢复', async () => {

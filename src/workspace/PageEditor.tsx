@@ -1,11 +1,12 @@
 import { EditorContent, useEditor } from '@tiptap/react'
-import type { Editor, Extensions } from '@tiptap/core'
+import type { Editor, Extensions, JSONContent } from '@tiptap/core'
 import { TextSelection } from '@tiptap/pm/state'
 import { useEffect, useLayoutEffect, useRef, useState } from 'react'
 import { CommentSidebar } from '../components/CommentSidebar'
 import type { CommentThread } from '../editor/comments'
 import { BlockHandleOverlay } from '../editor/components/BlockHandleOverlay'
 import { BubbleToolbar } from '../editor/components/BubbleToolbar'
+import { InlineMathOverlay } from '../editor/components/InlineMathOverlay'
 import { CodeBlockOverlay } from '../editor/components/CodeBlockOverlay'
 import { TableControlsOverlay } from '../editor/components/TableControlsOverlay'
 import { revealAnchor, revealBlock } from '../editor/components/reveal-anchor'
@@ -24,6 +25,7 @@ interface PageEditorProps {
   readonly onCommentsOpen: (open: boolean) => void
   readonly onEditorReady: (pageId: string, editor: Editor) => void
   readonly onEdit: EditPage
+  readonly onStageContent: (id: string, read: () => JSONContent) => void
   readonly onImport: (file: File) => void
 }
 
@@ -35,7 +37,7 @@ function hasFilePayload(data: DataTransfer) {
   return data.types.includes('Files') || [...data.items].some(item => item.kind === 'file')
 }
 
-export function PageEditor({ page, extensions, anchor, commentsOpen, onCommentsOpen, onEditorReady, onEdit, onImport }: PageEditorProps) {
+export function PageEditor({ page, extensions, anchor, commentsOpen, onCommentsOpen, onEditorReady, onEdit, onStageContent, onImport }: PageEditorProps) {
   const surface = useRef<HTMLElement>(null)
   const initialContent = useRef(page.content)
   const cancelCommentReveal = useRef<(() => void) | undefined>(undefined)
@@ -52,13 +54,17 @@ export function PageEditor({ page, extensions, anchor, commentsOpen, onCommentsO
       if (!surface.current?.contains(editor.view.dom)) return
       editor.commands.clearRetiredComments()
       if (!editor.state.doc.eq(editor.schema.nodeFromJSON(initialContent.current))) {
-        onEdit(page.id, { content: editor.getJSON() }, true)
+        onStageContent(page.id, () => editor.getJSON())
       }
     },
     onUpdate: ({ editor }) => {
       if (editor.isInitialized && surface.current?.contains(editor.view.dom)) {
-        onEdit(page.id, { content: editor.getJSON() }, true)
+        onStageContent(page.id, () => editor.getJSON())
       }
+    },
+    onUnmount: ({ editor }) => {
+      // History can retain the last edited plugin array after TipTap destroys the view.
+      editor.setOptions({ element: null })
     },
   })
 
@@ -140,6 +146,7 @@ export function PageEditor({ page, extensions, anchor, commentsOpen, onCommentsO
         onResolve={id => closeThread(id, true)} onDelete={id => closeThread(id, false)} onClose={() => onCommentsOpen(false)} />}
       {editor && <>
         <BubbleToolbar editor={editor} onComment={beginComment} />
+        <InlineMathOverlay editor={editor} />
         {overlayHost && <>
           <BlockHandleOverlay editor={editor} surface={surface} host={overlayHost}
             blockHash={id => formatPageHash(page.id, id)} onQuickInsert={openSlashMenu} />

@@ -19,6 +19,7 @@ export interface PageRecord {
 export interface WorkspaceState {
   readonly activePageId: string
   readonly pages: readonly PageRecord[]
+  readonly demoVersion?: number
 }
 
 export interface PageIdentity {
@@ -107,7 +108,7 @@ export function addPage(workspace: WorkspaceState, identity: PageIdentity, initi
   const parentId = initial.parentId ?? null
   if ((parentId !== null && !findPage(workspace, parentId)) || findPage(workspace, identity.id)) return workspace
   const page = makePage(identity, nextOrder(workspace, parentId), initial)
-  return { activePageId: page.id, pages: [...workspace.pages, page] }
+  return { ...workspace, activePageId: page.id, pages: [...workspace.pages, page] }
 }
 
 export function activatePage(workspace: WorkspaceState, id: string): WorkspaceState {
@@ -149,13 +150,13 @@ export function removePage(workspace: WorkspaceState, id: string, fallback: Page
   const index = pagesByParent(workspace)
   const removed = collectTree(index, [id])
   const pages = workspace.pages.filter(candidate => !removed.has(candidate.id))
-  if (!pages.length) return createWorkspace(fallback)
+  if (!pages.length) return { ...workspace, ...createWorkspace(fallback) }
   if (!removed.has(workspace.activePageId)) return { ...workspace, pages }
 
   const siblings = index.get(page.parentId) ?? []
   const at = siblings.indexOf(page)
   const activePageId = siblings[at + 1]?.id ?? siblings[at - 1]?.id ?? page.parentId ?? pages[0]!.id
-  return { activePageId, pages }
+  return { ...workspace, activePageId, pages }
 }
 
 export function importMarkdownPage(
@@ -197,21 +198,33 @@ function decodeWorkspace(schema: Schema, raw: string): WorkspaceState | null {
   if (!isObject(value) || typeof value.activePageId !== 'string' || !Array.isArray(value.pages) ||
       !value.pages.length || !value.pages.every(page => isPage(page, schema))) return null
 
-  const workspace: WorkspaceState = { activePageId: value.activePageId, pages: value.pages }
+  const workspace: WorkspaceState = {
+    activePageId: value.activePageId,
+    pages: value.pages,
+    ...(typeof value.demoVersion === 'number' && Number.isSafeInteger(value.demoVersion) && value.demoVersion > 0
+      ? { demoVersion: value.demoVersion } : {}),
+  }
   const index = pagesByParent(workspace)
   const reachable = collectTree(index, (index.get(null) ?? []).map(page => page.id))
   return reachable.size === workspace.pages.length && reachable.has(workspace.activePageId) ? workspace : null
 }
 
-export function loadWorkspace(storage: Storage | null, schema: Schema, fallback: () => WorkspaceState): WorkspaceState {
-  try {
-    const raw = storage?.getItem(WORKSPACE_STORAGE_KEY)
-    const stored = raw ? decodeWorkspace(schema, raw) : null
-    if (stored) return stored
-  } catch {
-    // The workspace may be damaged or browser storage may be unavailable.
+export function restoreWorkspace(raw: string | null, schema: Schema, fallback: () => WorkspaceState): WorkspaceState {
+  if (raw) {
+    try {
+      const stored = decodeWorkspace(schema, raw)
+      if (stored) return stored
+    } catch {
+      // A file or browser record can contain invalid JSON or an unsupported document.
+    }
   }
   return fallback()
+}
+
+export function loadWorkspace(storage: Storage | null, schema: Schema, fallback: () => WorkspaceState): WorkspaceState {
+  let raw: string | null = null
+  try { raw = storage?.getItem(WORKSPACE_STORAGE_KEY) ?? null } catch { /* Browser storage is unavailable. */ }
+  return restoreWorkspace(raw, schema, fallback)
 }
 
 export function saveWorkspace(storage: Storage | null, workspace: WorkspaceState): boolean {

@@ -101,7 +101,7 @@ describe('slash-command 交互', () => {
    * @partition trigger: slash, Chinese comma, code block rejection
    * @partition filter: Chinese label, pinyin, unmatched
    * @partition navigation: down/up wrap, Enter, Esc, IME
-   * @partition insertion: all 15 block types
+   * @partition insertion: all block types
    * @partition helpers: open menu and matcher ranges
    */
   it('trigger: 输入 / 弹出菜单，输入 、 同样触发', async () => {
@@ -111,7 +111,7 @@ describe('slash-command 交互', () => {
     instance.view.dom.focus()
     await user.keyboard('/')
     await screen.findByRole('listbox', { name: '插入块' })
-    expect(screen.getAllByRole('option').length).toBe(15)
+    expect(screen.getAllByRole('option').length).toBe(17)
     await user.keyboard('{Escape}')
     await waitFor(() => expect(screen.queryByRole('listbox', { name: '插入块' })).not.toBeInTheDocument())
     await user.keyboard(' 、')
@@ -230,6 +230,22 @@ describe('slash-command 交互', () => {
       expect(block?.firstChild?.childCount).toBe(3)
       expect(block?.firstChild?.firstChild?.type.name).toBe('tableHeader')
     }
+  })
+
+  it.each([
+    ['lct', 'mermaid', /^flowchart/], ['mermaid', 'mermaid', /^flowchart/],
+    ['gs', 'math', /n\(n\+1\)/], ['math', 'math', /n\(n\+1\)/],
+  ] as const)('insertion: /%s inserts a previewable Markdown code block', async (query, language, example) => {
+    const instance = editor()
+    render(<EditorContent editor={instance} />)
+    instance.view.dom.focus()
+    insertText(instance, ` /${query}`)
+    await screen.findByRole('option', { selected: true })
+    await userEvent.setup().keyboard('{Enter}')
+    const block = instance.state.doc.children.find(child => child.type.name === 'codeBlock')
+    expect(block?.attrs).toMatchObject({ language, viewMode: 'preview' })
+    expect(block?.textContent).toMatch(example)
+    expect(instance.state.doc.textContent).not.toContain(`/${query}`)
   })
 
   it.each([

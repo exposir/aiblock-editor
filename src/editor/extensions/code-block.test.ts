@@ -1,6 +1,7 @@
 import { Editor } from '@tiptap/core'
 import { describe, expect, it, onTestFinished } from 'vitest'
 import { CODE_LANGUAGES, codeHighlightKey, highlightCode } from './code-block'
+import { docToMarkdown, markdownToDoc } from '../markdown/markdown-codec'
 import { createEditorExtensions } from './index'
 
 function editorWithCode(content: string) {
@@ -27,6 +28,15 @@ describe('code block', () => {
       expect(highlightCode(language, 'const name = "汉字 ☀️"').every(token => token.to > token.from)).toBe(true)
     }
     expect(highlightCode('unrecognized', 'const x = 1')).toEqual([])
+  })
+
+  it('keeps display view mode in the document while Markdown carries only the formula', () => {
+    const editor = editorWithCode('<pre data-language="tex" data-view-mode="split"><code>x^2</code></pre>')
+    expect(editor.state.doc.firstChild?.attrs).toMatchObject({ language: 'math', viewMode: 'split' })
+    expect(editorWithCode(editor.getHTML()).getJSON()).toEqual(editor.getJSON())
+    const markdown = docToMarkdown(editor.state.doc)
+    expect(markdown).toBe('$$\nx^2\n$$\n')
+    expect(markdownToDoc(editor.schema, markdown).firstChild?.attrs.viewMode).toBe('preview')
   })
 
   it('decorations: decorates TypeScript tokens at their document offsets and clears for plain text', () => {

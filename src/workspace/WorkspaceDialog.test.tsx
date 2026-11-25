@@ -77,7 +77,7 @@ describe('WorkspaceDialog', () => {
     const confirm = vi.fn()
     render(dialog({ kind: 'reset' }, { onConfirm: confirm }))
     expect(screen.getByRole('dialog', { name: '重置示例工作区' })).toHaveAccessibleDescription(
-      '本地保存的页面和评论将被清除，并恢复四个示例页面。',
+      '本地保存的页面和评论将被清除，并恢复五个示例页面。',
     )
     await user.click(screen.getByRole('button', { name: '确认重置' }))
     expect(confirm).toHaveBeenCalledWith('')

@@ -5,7 +5,7 @@ import { useEffect, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
 import { edgeTableCell, runTableAction } from '../extensions/enhanced-table'
 import type { TableAction } from '../extensions/enhanced-table'
-import { useAnchoredPosition, useEditorSnapshot, useOverlayRect } from './editor-ui'
+import { useAnchoredPosition, useEditorSelector, useOverlayRect } from './editor-ui'
 
 const rowActions: readonly [TableAction, string][] = [
   ['addRowBefore', '在上方插入行'], ['addRowAfter', '在下方插入行'],
@@ -29,8 +29,23 @@ function clamp(value: number, min: number, max: number) {
   return Math.min(Math.max(value, min), Math.max(min, max))
 }
 
+function readTableSelection(editor: Editor | null) {
+  if (!editor) return { near: null, edge: null }
+  const state = editor.state
+  const cell = state.selection instanceof CellSelection ? state.selection.$headCell : cellAround(state.selection.$head)
+  const resize = columnResizingPluginKey.getState(state)
+  return {
+    near: cell ? editor.view.nodeDOM(cell.pos) : null,
+    edge: resize && resize.activeHandle >= 0 ? editor.view.nodeDOM(resize.activeHandle) : null,
+  }
+}
+
+function sameTableSelection(a: ReturnType<typeof readTableSelection>, b: ReturnType<typeof readTableSelection>) {
+  return a.near === b.near && a.edge === b.edge
+}
+
 export function TableControlsOverlay({ editor, host }: { editor: Editor; host: HTMLElement }) {
-  const state = useEditorSnapshot(editor)
+  const { near, edge } = useEditorSelector(editor, readTableSelection, sameTableSelection)
   const layer = useRef<HTMLDivElement>(null)
   const panel = useRef<HTMLDivElement>(null)
   const [hover, setHover] = useState<HTMLTableCellElement | null>(null)
@@ -39,15 +54,11 @@ export function TableControlsOverlay({ editor, host }: { editor: Editor; host: H
   const owner = dom.ownerDocument
   const validMenu = menu?.cell.isConnected && menu.anchor.isConnected &&
     dom.contains(menu.cell) && !menu.cell.closest('[inert]') ? menu : null
-  const $cell = state.selection instanceof CellSelection ? state.selection.$headCell : cellAround(state.selection.$head)
-  const near = $cell ? editor.view.nodeDOM($cell.pos) : null
   const cell = validMenu?.cell ?? (hover?.isConnected && dom.contains(hover) ? hover :
     near instanceof HTMLTableCellElement && near.isConnected ? near : null)
   const table = cell?.closest('table') ?? null
   const wrapper = table?.closest<HTMLElement>('.tableWrapper') ?? table
-  const resize = columnResizingPluginKey.getState(state)
-  const edgeDOM = resize && resize.activeHandle >= 0 ? editor.view.nodeDOM(resize.activeHandle) : null
-  const resizeCell = edgeDOM instanceof HTMLElement ? edgeDOM : null
+  const resizeCell = edge instanceof HTMLElement ? edge : null
   const tableRect = useOverlayRect(table, host, dom)
   const wrapperRect = useOverlayRect(wrapper, host, dom)
   const cellRect = useOverlayRect(cell, host, dom)

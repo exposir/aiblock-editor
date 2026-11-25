@@ -1,21 +1,26 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react'
 import type { ComponentPropsWithoutRef, FocusEvent as ReactFocusEvent, PointerEvent as ReactPointerEvent } from 'react'
 import { createPortal } from 'react-dom'
-import { overlayOrigin } from './overlay-geometry'
 import { findOverlayHost, subscribeOverlayLayout } from './overlay-layout'
 
 interface FloatingBlockControlProps extends ComponentPropsWithoutRef<'button'> {
   readonly revealOnHover?: boolean
 }
 
-function placeButton(anchor: HTMLElement, button: HTMLButtonElement, host: HTMLElement) {
-  const origin = overlayOrigin(host)
-  const rect = anchor.getBoundingClientRect()
-  button.hidden = !rect.width || !rect.height || !!anchor.closest('[inert]')
-  button.style.left = `${rect.left - origin.x}px`
-  button.style.top = `${rect.top - origin.y}px`
-  button.style.width = `${rect.width}px`
-  button.style.height = `${rect.height}px`
+function measureButton(anchor: HTMLElement, button: HTMLButtonElement, host: HTMLElement, read: (el: Element) => DOMRect) {
+  const origin = read(host)
+  const rect = read(anchor)
+  const hidden = !rect.width || !rect.height || !!anchor.closest('[inert]')
+  const styles = {
+    left: `${rect.left - origin.left}px`, top: `${rect.top - origin.top}px`,
+    width: `${rect.width}px`, height: `${rect.height}px`,
+  } as const
+  return () => {
+    if (button.hidden !== hidden) button.hidden = hidden
+    for (const key of ['left', 'top', 'width', 'height'] as const) {
+      if (button.style[key] !== styles[key]) button.style[key] = styles[key]
+    }
+  }
 }
 
 export function FloatingBlockControl({ className, style, revealOnHover = false, ...props }: FloatingBlockControlProps) {
@@ -39,24 +44,14 @@ export function FloatingBlockControl({ className, style, revealOnHover = false, 
   }, [])
 
   useLayoutEffect(() => {
-    if (anchor && button && host) placeButton(anchor, button, host)
-  })
-
-  useLayoutEffect(() => {
     if (anchor && !host) setHost(findOverlayHost(anchor))
   })
 
   useLayoutEffect(() => {
     if (!anchor || !button || !host) return
     const editorRoot = anchor.closest<HTMLElement>('.ProseMirror') ?? anchor.parentElement
-    const place = () => placeButton(anchor, button, host)
-    const stop = editorRoot ? subscribeOverlayLayout(editorRoot, place) : null
-    const observer = typeof ResizeObserver === 'function' ? new ResizeObserver(place) : null
-    observer?.observe(anchor)
-    return () => {
-      observer?.disconnect()
-      stop?.()
-    }
+    measureButton(anchor, button, host, element => element.getBoundingClientRect())()
+    return editorRoot ? subscribeOverlayLayout(editorRoot, read => measureButton(anchor, button, host, read)) : undefined
   }, [anchor, button, host])
 
   useEffect(() => {

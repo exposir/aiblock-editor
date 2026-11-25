@@ -5,6 +5,8 @@ import { ReactRenderer } from '@tiptap/react'
 import Suggestion from '@tiptap/suggestion'
 import type { SuggestionMatch, SuggestionProps, Trigger } from '@tiptap/suggestion'
 import { shift, size } from '@floating-ui/dom'
+import { exampleFormula } from '../preview/math'
+import { diagramTemplates } from '../preview/mermaid'
 import { SlashMenu } from '../components/SlashMenu'
 import type { SlashMenuProps } from '../components/SlashMenu'
 import { searchSlashItems } from './slash-search'
@@ -42,6 +44,13 @@ function insertSlashBlock(editor: Editor, range: Range, item: SlashItem): void {
     case 'columns2': chain.insertColumns(2).run(); break
     case 'columns3': chain.insertColumns(3).run(); break
     case 'table': chain.insertTable({ rows: 3, cols: 3, withHeaderRow: true }).run(); break
+    case 'mermaid':
+    case 'math':
+      chain.insertContent({
+        type: 'codeBlock', attrs: { language: item.id },
+        content: [{ type: 'text', text: item.id === 'mermaid' ? diagramTemplates[0].source : exampleFormula }],
+      }).run()
+      break
     case 'codeBlock': chain.setCodeBlock().run(); break
   }
 }

@@ -3,7 +3,7 @@ import { act, render } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { createEditorExtensions } from '../editor/extensions'
 import { DEMO_HANDBOOK_ID, createDemoWorkspace } from './demo-workspace'
-import { WORKSPACE_STORAGE_KEY, findPage } from './page-store'
+import { WORKSPACE_STORAGE_KEY, findPage, removePage } from './page-store'
 import type { WorkspaceState } from './page-store'
 import { useWorkspace } from './useWorkspace'
 
@@ -45,13 +45,34 @@ describe('useWorkspace 工作区生命周期', () => {
     history.replaceState(null, '', '/')
   })
 
-  it('initial: 首次打开生成四个示例页并立即保存', () => {
+  it('initial: 首次打开生成五个示例页并立即保存', () => {
     mount()
-    expect(latest.workspace.pages).toHaveLength(4)
+    expect(latest.workspace.pages).toHaveLength(5)
     expect(latest.anchor).toBeNull()
     expect(stored()?.activePageId).toBe(DEMO_HANDBOOK_ID)
     expect(history.scrollRestoration).toBe('manual')
     expect(location.hash).toBe(`#page=${DEMO_HANDBOOK_ID}`)
+  })
+
+  it('initial: 旧示例补入图表页并保留本地修改，删除后刷新不会补回', () => {
+    const workspace = createDemoWorkspace(schema)
+    const gallery = workspace.pages.find(page => page.title === '全图种与公式复杂示例')!
+    const active = workspace.pages.find(page => page.title === '试点验收清单')!
+    const legacy = {
+      activePageId: active.id,
+      pages: workspace.pages.filter(page => page.id !== gallery.id).map(page =>
+        page.id === DEMO_HANDBOOK_ID ? { ...page, title: '本地手册' } : page),
+    }
+    localStorage.setItem(storageKey, JSON.stringify(legacy))
+    const first = mount()
+    expect(latest.workspace.activePageId).toBe(active.id)
+    expect(findPage(latest.workspace, DEMO_HANDBOOK_ID)?.title).toBe('本地手册')
+    expect(stored()?.pages).toEqual([...legacy.pages, gallery])
+    act(() => latest.change(current => removePage(current, gallery.id, { id: 'unused', now: 0 })))
+    first.unmount()
+    mount()
+    expect(stored()?.pages).toEqual(legacy.pages)
+    expect(latest.workspace.activePageId).toBe(active.id)
   })
 
   it('initial: 从有效的页面和块地址恢复指定页与块锚点', () => {
@@ -88,6 +109,40 @@ describe('useWorkspace 工作区生命周期', () => {
     expect(localStorage.getItem(storageKey)).toBe(original)
     act(() => vi.advanceTimersByTime(1))
     expect(findPage(stored()!, DEMO_HANDBOOK_ID)?.title).toBe('临时标题')
+  })
+
+  it('persistence: 连续输入只在最后一次编辑 350ms 后生成快照', () => {
+    mount()
+    const initial = localStorage.getItem(storageKey)
+    const older = vi.fn(() => ({ type: 'doc', content: [{ type: 'paragraph' }] }))
+    const content = { type: 'doc', content: [{ type: 'paragraph', content: [{ type: 'text', text: '最后一个字' }] }] }
+    const newest = vi.fn(() => content)
+    act(() => {
+      latest.stageContent(DEMO_HANDBOOK_ID, older)
+      vi.advanceTimersByTime(200)
+      latest.stageContent(DEMO_HANDBOOK_ID, newest)
+      vi.advanceTimersByTime(349)
+    })
+    expect(older).not.toHaveBeenCalled()
+    expect(newest).not.toHaveBeenCalled()
+    expect(localStorage.getItem(storageKey)).toBe(initial)
+    act(() => vi.advanceTimersByTime(1))
+    expect(newest).toHaveBeenCalledTimes(1)
+    expect(findPage(stored()!, DEMO_HANDBOOK_ID)?.content).toEqual(content)
+  })
+
+  it('navigation: 最后一个字在切页和 pagehide 时立即保存', () => {
+    mount()
+    const next = latest.workspace.pages.find(page => page.id !== DEMO_HANDBOOK_ID)!
+    const content = (text: string) => ({ type: 'doc', content: [{ type: 'paragraph', content: [{ type: 'text', text }] }] })
+    act(() => {
+      latest.stageContent(DEMO_HANDBOOK_ID, () => content('切换前'))
+      latest.change(workspace => ({ ...workspace, activePageId: next.id }))
+      latest.stageContent(next.id, () => content('关页前'))
+      window.dispatchEvent(new Event('pagehide'))
+    })
+    expect(findPage(stored()!, DEMO_HANDBOOK_ID)?.content).toEqual(content('切换前'))
+    expect(findPage(stored()!, next.id)?.content).toEqual(content('关页前'))
   })
 
   it('persistence: pagehide 与 visibilitychange 会把待写内容立即刷盘', () => {
@@ -171,6 +226,6 @@ describe('useWorkspace 工作区生命周期', () => {
     expect(latest.workspace.pages.map(page => page.title)[0]).toBe('文档协作与发布手册')
     expect(latest.anchor).toBeNull()
     expect(location.hash).toBe(`#page=${DEMO_HANDBOOK_ID}`)
-    expect(stored()?.pages).toHaveLength(4)
+    expect(stored()?.pages).toHaveLength(5)
   })
 })

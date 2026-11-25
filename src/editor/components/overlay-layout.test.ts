@@ -54,8 +54,8 @@ describe('document overlay layout', () => {
     const root = document.createElement('div')
     document.body.append(root)
     const calls: string[] = []
-    const stopA = subscribeOverlayLayout(root, () => calls.push('a'))
-    const stopB = subscribeOverlayLayout(root, () => calls.push('b'))
+    const stopA = subscribeOverlayLayout(root, () => { calls.push('a') })
+    const stopB = subscribeOverlayLayout(root, () => { calls.push('b') })
 
     root.append(document.createElement('p'))
     await wait(80)
@@ -63,5 +63,31 @@ describe('document overlay layout', () => {
 
     stopA()
     stopB()
+  })
+
+  it('scheduling: all controls read the same layout before any applies changes', async () => {
+    const root = document.createElement('div')
+    document.body.append(root)
+    let updated = false
+    let finish!: () => void
+    const complete = new Promise<void>(resolve => { finish = resolve })
+    let readBeforeCommit = false
+    const stopFirst = subscribeOverlayLayout(root, rect => {
+      rect(root)
+      return () => { updated = true }
+    })
+    const stopSecond = subscribeOverlayLayout(root, rect => {
+      readBeforeCommit = !updated && rect(root) === rect(root)
+      return finish
+    })
+    try {
+      root.append(document.createElement('p'))
+      await complete
+      expect(readBeforeCommit).toBe(true)
+      expect(updated).toBe(true)
+    } finally {
+      stopFirst()
+      stopSecond()
+    }
   })
 })

@@ -2,6 +2,7 @@ import { Extension } from '@tiptap/core'
 import { Slice } from '@tiptap/pm/model'
 import { Plugin, PluginKey } from '@tiptap/pm/state'
 import type { EditorState, Transaction } from '@tiptap/pm/state'
+import { hasMathMarkup } from '../preview/math-markup'
 import { markdownToSlice } from './markdown-codec'
 
 const markdownPasteKey = new PluginKey('markdownPaste')
@@ -16,6 +17,7 @@ function markdownCandidate(text: string): boolean {
     } catch { /* not JSON */ }
   }
   if (/^(?:https?|mailto|tel):\S+$/i.test(trimmed)) return false
+  if (hasMathMarkup(text)) return true
   if (/^(?:```|~~~|>|#{1,6}\s|[-*+]\s|\s*\d+\.\s+\S|\|[^\n]*\||<details|::::columns|\[!\w+\]|==[^=\n]+==|`[^`\n]+`)/im.test(text)) return true
   if (/^\s*[-*+]\s+\[[ xX]\]\s+/m.test(text)) return true
   const lines = trimmed.split(/\r?\n/)

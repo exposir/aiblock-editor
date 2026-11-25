@@ -3,6 +3,7 @@ import { TextSelection, Plugin } from '@tiptap/pm/state'
 import { Decoration, DecorationSet } from '@tiptap/pm/view'
 import type { Node as ProseMirrorNode, ResolvedPos } from '@tiptap/pm/model'
 import { ReactNodeViewRenderer } from '@tiptap/react'
+import { createNodeIndex } from './document-changes'
 import type { ToggleAttributes } from '../types'
 import { ToggleView, toggleBodyId } from '../views/toggle-view'
 
@@ -90,6 +91,7 @@ export const Toggle = Node.create({
   addProseMirrorPlugins() {
     const { instanceId } = this.editor
     const type = this.type
+    const toggles = createNodeIndex(node => node.type === type && node.childCount === 2)
     let cachedDoc: ProseMirrorNode | undefined
     let cachedEditingBodies = ''
     let decorations = DecorationSet.empty
@@ -107,8 +109,7 @@ export const Toggle = Node.create({
           cachedDoc = doc
           cachedEditingBodies = editingKey
           const items: Decoration[] = []
-          doc.descendants((node, pos) => {
-            if (node.type !== type || node.childCount !== 2) return
+          for (const { node, pos } of toggles(doc)) {
             const bodyAt = pos + 1 + node.child(0).nodeSize
             const attrs: Record<string, string> = {}
             const id = toggleBodyId(instanceId, node.attrs.blockId)
@@ -117,7 +118,7 @@ export const Toggle = Node.create({
             // Scrolling or typing into the body needs its final layout immediately.
             else if (editingBodies.has(bodyAt)) attrs['data-toggle-editing'] = ''
             items.push(Decoration.node(bodyAt, bodyAt + node.child(1).nodeSize, attrs))
-          })
+          }
           decorations = DecorationSet.create(doc, items)
           return decorations
         },

@@ -1,27 +1,15 @@
 import { CodeBlock as BaseCodeBlock } from '@tiptap/extension-code-block'
 import type { Node as ProseMirrorNode } from '@tiptap/pm/model'
-import { Plugin, PluginKey } from '@tiptap/pm/state'
+import { NodeSelection, Plugin, PluginKey, TextSelection } from '@tiptap/pm/state'
 import { Decoration, DecorationSet } from '@tiptap/pm/view'
 import { common, createLowlight } from 'lowlight'
+import { codeNodeView } from '../preview/code-node-view'
+import { codeLanguage, isPreviewLanguage, viewModeFor } from './code-languages'
+import type { CodeLanguage, CodeViewMode } from './code-languages'
+import { createNodeIndex, textEdits } from './document-changes'
 
-export const CODE_LANGUAGES = [
-  'plaintext', 'typescript', 'javascript', 'python', 'rust', 'go',
-  'sql', 'json', 'bash', 'css', 'html', 'markdown',
-] as const
-
-export type CodeLanguage = (typeof CODE_LANGUAGES)[number]
-
-const aliases: Record<string, CodeLanguage> = {
-  text: 'plaintext', plain: 'plaintext', ts: 'typescript', js: 'javascript', py: 'python',
-  rs: 'rust', sh: 'bash', shell: 'bash', xml: 'html', md: 'markdown',
-}
-
-export function codeLanguage(value: unknown): CodeLanguage {
-  if (typeof value !== 'string') return 'plaintext'
-  const name = value.trim().toLowerCase()
-  return CODE_LANGUAGES.find(language => language === name) ??
-    (Object.hasOwn(aliases, name) ? aliases[name]! : 'plaintext')
-}
+export { CODE_LANGUAGES, codeLanguage } from './code-languages'
+export type { CodeLanguage } from './code-languages'
 
 const highlighter = createLowlight(common)
 
@@ -33,7 +21,7 @@ export interface CodeToken {
 
 export function highlightCode(language: unknown, text: string): CodeToken[] {
   const grammar = codeLanguage(language)
-  if (grammar === 'plaintext' || !text) return []
+  if (grammar === 'plaintext' || isPreviewLanguage(grammar) || !text) return []
 
   const root = highlighter.highlight(grammar === 'html' ? 'xml' : grammar, text)
   const tokens: CodeToken[] = []
@@ -60,7 +48,7 @@ export const codeHighlightKey = new PluginKey<DecorationSet>('codeHighlight')
 declare module '@tiptap/core' {
   interface Commands<ReturnType> {
     enhancedCodeBlock: {
-      updateCodeBlock: (pos: number, attrs: { language?: CodeLanguage; wrap?: boolean }) => ReturnType
+      updateCodeBlock: (pos: number, attrs: { language?: CodeLanguage; wrap?: boolean; viewMode?: CodeViewMode }) => ReturnType
     }
   }
 }
@@ -74,6 +62,13 @@ export const CodeBlock = BaseCodeBlock.extend({
         parseHTML: element => codeLanguage(element.getAttribute('data-language') ??
           [...(element.firstElementChild?.classList ?? [])].find(name => name.startsWith('language-'))?.slice(9)),
         renderHTML: attrs => ({ 'data-language': codeLanguage(attrs.language) }),
+      },
+      viewMode: {
+        default: 'preview',
+        parseHTML: element => viewModeFor('mermaid', element.getAttribute('data-view-mode')),
+        renderHTML: attrs => isPreviewLanguage(codeLanguage(attrs.language))
+          ? { 'data-view-mode': viewModeFor(codeLanguage(attrs.language), attrs.viewMode) }
+          : {},
       },
       wrap: {
         default: false,
@@ -91,8 +86,13 @@ export const CodeBlock = BaseCodeBlock.extend({
         const node = tr.doc.nodeAt(pos)
         if (node?.type !== this.type) return false
         if (dispatch) {
-          if (attrs.language !== undefined && attrs.language !== node.attrs.language) {
-            tr.setNodeAttribute(pos, 'language', codeLanguage(attrs.language))
+          const currentLanguage = codeLanguage(node.attrs.language)
+          const language = codeLanguage(attrs.language ?? currentLanguage)
+          if (attrs.language !== undefined && language !== node.attrs.language) tr.setNodeAttribute(pos, 'language', language)
+          const enteringPreview = !isPreviewLanguage(currentLanguage) && isPreviewLanguage(language)
+          if (isPreviewLanguage(language) && (attrs.viewMode !== undefined || enteringPreview)) {
+            const mode = viewModeFor(language, attrs.viewMode)
+            if (node.attrs.viewMode !== mode) tr.setNodeAttribute(pos, 'viewMode', mode)
           }
           if (attrs.wrap !== undefined && attrs.wrap !== node.attrs.wrap) tr.setNodeAttribute(pos, 'wrap', attrs.wrap)
         }
@@ -101,38 +101,55 @@ export const CodeBlock = BaseCodeBlock.extend({
     }
   },
 
+  addNodeView() {
+    return ({ node, view }) => codeNodeView(view.dom.ownerDocument, node)
+  },
+
   addProseMirrorPlugins() {
     const { editor, type } = this
     const cache = new WeakMap<ProseMirrorNode, readonly CodeToken[]>()
+    const codes = createNodeIndex(node => node.type === type)
+
+    function decorationsAt(node: ProseMirrorNode, pos: number) {
+      let tokens = cache.get(node)
+      if (!tokens) {
+        tokens = highlightCode(node.attrs.language, node.textContent)
+        cache.set(node, tokens)
+      }
+      return tokens.map(token =>
+        Decoration.inline(pos + 1 + token.from, pos + 1 + token.to, { class: token.className }))
+    }
 
     function decorate(doc: ProseMirrorNode) {
-      const decorations: Decoration[] = []
-      doc.descendants((node, pos) => {
-        if (node.type !== type) return
-        let tokens = cache.get(node)
-        if (!tokens) {
-          tokens = highlightCode(node.attrs.language, node.textContent)
-          cache.set(node, tokens)
-        }
-        for (const token of tokens) {
-          decorations.push(Decoration.inline(pos + 1 + token.from, pos + 1 + token.to, { class: token.className }))
-        }
-        return false
-      })
-      return DecorationSet.create(doc, decorations)
+      return DecorationSet.create(doc, codes(doc).flatMap(({ node, pos }) => decorationsAt(node, pos)))
     }
 
     return [
       ...(this.parent?.() ?? []),
       new Plugin({
         key: codeHighlightKey,
+        appendTransaction(_transactions, _previous, state) {
+          const { selection } = state
+          if (!(selection instanceof TextSelection) || !selection.empty) return null
+          const { $head } = selection
+          if ($head.parent.type !== type ||
+              viewModeFor(codeLanguage($head.parent.attrs.language), $head.parent.attrs.viewMode) !== 'preview') return null
+          return state.tr.setSelection(NodeSelection.create(state.doc, $head.before()))
+        },
         state: {
           init: (_, state) => decorate(state.doc),
           apply(tr, previous) {
             if (!tr.docChanged && !tr.getMeta(codeHighlightKey)) return previous
-            return editor.isInitialized && editor.view.composing
-              ? previous.map(tr.mapping, tr.doc)
-              : decorate(tr.doc)
+            if (editor.isInitialized && editor.view.composing) return previous.map(tr.mapping, tr.doc)
+            const edits = tr.getMeta(codeHighlightKey) ? null : textEdits(tr)
+            if (!edits) return decorate(tr.doc)
+            let next = previous.map(tr.mapping, tr.doc)
+            for (const { node, pos } of edits) {
+              if (node.type !== type) continue
+              next = next.remove(next.find(pos + 1, pos + node.nodeSize - 1))
+                .add(tr.doc, decorationsAt(node, pos))
+            }
+            return next
           },
         },
         props: {

@@ -1,4 +1,5 @@
 import type { Editor } from '@tiptap/core'
+import { suggestedFileName } from '../../desktop/bridge'
 import { docToMarkdown } from './markdown-codec'
 
 export function markdownFile(doc: Editor['state']['doc']): Blob {
@@ -6,11 +7,14 @@ export function markdownFile(doc: Editor['state']['doc']): Blob {
 }
 
 export function downloadMarkdown(doc: Editor['state']['doc'], title: string) {
-  const name = title.trim() || '未命名文档'
-  const url = URL.createObjectURL(markdownFile(doc))
+  downloadBlob(markdownFile(doc), suggestedFileName(title, 'markdown'))
+}
+
+export function downloadBlob(blob: Blob, name: string) {
+  const url = URL.createObjectURL(blob)
   const link = document.createElement('a')
   link.href = url
-  link.download = `${name.replace(/[\\/:*?"<>|]/g, '_')}.md`
+  link.download = name
   document.body.append(link)
   link.click()
   link.remove()

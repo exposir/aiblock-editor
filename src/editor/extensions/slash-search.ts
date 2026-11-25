@@ -23,6 +23,8 @@ export const SLASH_ITEMS = [
   { id: 'columns2', label: '双栏', group: '容器与布局', english: 'Two columns', keywords: ['分栏', '两栏', 'column', '2 columns'] },
   { id: 'columns3', label: '三栏', group: '容器与布局', english: 'Three columns', keywords: ['分栏', 'column', '3 columns'] },
   { id: 'table', label: '表格', group: '高级块', english: 'Table', keywords: ['grid'] },
+  { id: 'mermaid', label: '流程图 / 图表', group: '高级块', english: 'Mermaid', keywords: ['流程图', '图表', 'lct', 'tb', 'liuchengtu', 'diagram', 'flowchart'] },
+  { id: 'math', label: '数学公式', group: '高级块', english: 'LaTeX', keywords: ['math', 'latex', '公式', 'gs', 'gongshi'] },
   { id: 'codeBlock', label: '代码块', group: '高级块', english: 'Code block', keywords: ['代码', 'code'] },
 ] as const satisfies readonly SlashItem[]
 
@@ -48,6 +50,8 @@ export function searchSlashItems(query: string): SlashItem[] {
   const key = normalize(query)
   if (!query.trim()) return index.map(entry => entry.item)
   if (!key) return []
+  const exact = index.filter(({ terms }) => terms.includes(key))
+  if (exact.length) return exact.map(({ item }) => item)
   const prefixes = index.filter(({ terms }) => terms.some(term => term.startsWith(key)))
   const matches = prefixes.length ? prefixes : index.filter(({ terms }) => terms.some(term => term.includes(key)))
   return matches.map(({ item }) => item)

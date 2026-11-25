@@ -1,0 +1,313 @@
+import { app, BrowserWindow, dialog, ipcMain, Menu, nativeTheme, screen, shell } from 'electron'
+import type { IpcMainEvent, IpcMainInvokeEvent, MenuItemConstructorOptions } from 'electron'
+import { join } from 'node:path'
+import { pathToFileURL } from 'node:url'
+import { desktopChannels as channels, suggestedFileName } from '../src/desktop/bridge.js'
+import type { DesktopMenuCommand } from '../src/desktop/bridge.js'
+import { isThemeMode, parseThemeMode, themeBackgrounds, themeLabels, themeModes } from '../src/theme/theme.js'
+import type { ThemeMode } from '../src/theme/theme.js'
+import { decideNavigation, developmentUrl, externalUrl, isAppDocument } from './security.js'
+import { createWorkspaceFile, isSaveFileOptions, readMarkdownFile, readOptionalText, writeAtomicText } from './storage.js'
+import { minimumWindowSize, parseWindowState, restoreWindowState } from './window-state.js'
+
+const isMac = process.platform === 'darwin'
+const productionPage = pathToFileURL(join(app.getAppPath(), 'dist', 'index.html')).href
+function rendererUrl() {
+  const dev = app.isPackaged ? undefined : process.env.LARK_EDITOR_DEV_URL
+  if (dev === undefined) return productionPage
+  const url = developmentUrl(dev)
+  if (!url) throw new Error('Electron development requires a loopback Vite URL')
+  return url
+}
+
+const appUrl = rendererUrl()
+
+let mainWindow: BrowserWindow | null = null
+let openingWindow = false
+let quitting = false
+
+function reportError(error: unknown) {
+  console.error(error)
+}
+
+function openExternal(target: string) {
+  const url = externalUrl(target)
+  if (url) void shell.openExternal(url).catch(reportError)
+}
+
+function isTrustedSender(event: IpcMainEvent | IpcMainInvokeEvent): boolean {
+  return event.sender === mainWindow?.webContents &&
+    event.senderFrame === event.sender.mainFrame &&
+    isAppDocument(event.senderFrame.url, appUrl)
+}
+
+function installNavigationPolicy(window: BrowserWindow) {
+  const { webContents } = window
+  webContents.setWindowOpenHandler(({ url }) => {
+    const decision = decideNavigation(url, appUrl)
+    if (decision.kind === 'external') openExternal(decision.url)
+    return { action: 'deny' }
+  })
+  webContents.on('will-navigate', event => {
+    const decision = decideNavigation(event.url, appUrl)
+    if (decision.kind === 'allow') return
+    event.preventDefault()
+    if (decision.kind === 'external') openExternal(decision.url)
+  })
+  webContents.on('will-frame-navigate', event => {
+    if (!event.isMainFrame) event.preventDefault()
+  })
+  webContents.on('will-redirect', event => {
+    if (!event.isMainFrame || !isAppDocument(event.url, appUrl)) event.preventDefault()
+  })
+  webContents.on('will-attach-webview', event => event.preventDefault())
+
+  const clipboardAllowed = (contents: Electron.WebContents | null, permission: string, mainFrame: boolean) =>
+    permission === 'clipboard-sanitized-write' && mainFrame && contents === mainWindow?.webContents &&
+    isAppDocument(contents.getURL(), appUrl)
+  webContents.session.setPermissionCheckHandler((contents, permission, _origin, details) =>
+    clipboardAllowed(contents, permission, details.isMainFrame))
+  webContents.session.setPermissionRequestHandler((contents, permission, reply, details) => {
+    reply(clipboardAllowed(contents, permission, details.isMainFrame))
+  })
+}
+
+function windowBackground() {
+  return themeBackgrounds[nativeTheme.shouldUseDarkColors ? 'dark' : 'light']
+}
+
+function installTheme(path: string) {
+  let pending = Promise.resolve()
+  function updateWindow() {
+    mainWindow?.setBackgroundColor(windowBackground())
+  }
+  nativeTheme.on('updated', updateWindow)
+  ipcMain.on(channels.initialTheme, event => {
+    event.returnValue = isTrustedSender(event) ? nativeTheme.themeSource : null
+  })
+
+  function setTheme(mode: ThemeMode): Promise<void> {
+    if (nativeTheme.themeSource === mode) return pending
+    nativeTheme.themeSource = mode
+    updateWindow()
+    const item = Menu.getApplicationMenu()?.getMenuItemById(`theme-${mode}`)
+    if (item) item.checked = true
+    pending = pending.then(() => writeAtomicText(path, mode)).catch(reportError)
+    return pending
+  }
+
+  trustedHandler(channels.setTheme, (_window, mode) => {
+    if (!isThemeMode(mode)) throw new TypeError('Invalid theme preference')
+    return setTheme(mode)
+  })
+  return { setTheme, drain: () => pending }
+}
+
+function installMenu(setTheme: (mode: ThemeMode) => Promise<void>) {
+  function action(label: string, command: DesktopMenuCommand, accelerator?: string): MenuItemConstructorOptions {
+    return {
+      label, accelerator,
+      click: () => mainWindow?.webContents.send(channels.menuCommand, command),
+    }
+  }
+
+  const menu: MenuItemConstructorOptions[] = [
+    ...(isMac ? [{ role: 'appMenu' as const }] : []),
+    {
+      label: 'File',
+      submenu: [
+        action('新建页面', 'new-page', 'CmdOrCtrl+N'),
+        action('导入 Markdown…', 'import-markdown', 'CmdOrCtrl+O'),
+        { type: 'separator' },
+        action('导出 Markdown…', 'export-markdown', 'CmdOrCtrl+Shift+E'),
+        action('导出 JSON…', 'export-json'),
+        { type: 'separator' }, { role: 'close' },
+      ],
+    },
+    {
+      label: 'Edit',
+      submenu: [
+        { role: 'undo' }, { role: 'redo' }, { type: 'separator' },
+        { role: 'cut' }, { role: 'copy' }, { role: 'paste' },
+        { role: 'pasteAndMatchStyle' }, { role: 'delete' }, { role: 'selectAll' },
+      ],
+    },
+    {
+      label: 'View',
+      submenu: [
+        action('切换页面侧栏', 'toggle-pages', 'CmdOrCtrl+Shift+1'),
+        action('切换目录侧栏', 'toggle-outline', 'CmdOrCtrl+Shift+2'),
+        action('切换评论侧栏', 'toggle-comments', 'CmdOrCtrl+Shift+3'),
+        { type: 'separator' },
+        {
+          label: '外观',
+          submenu: themeModes.map(mode => ({
+            id: `theme-${mode}`,
+            label: themeLabels[mode],
+            type: 'radio',
+            checked: nativeTheme.themeSource === mode,
+            click: () => {
+              void setTheme(mode)
+              mainWindow?.webContents.send(channels.menuCommand, `theme-${mode}`)
+            },
+          })),
+        },
+        { type: 'separator' },
+        { role: 'resetZoom' }, { role: 'zoomIn' }, { role: 'zoomOut' },
+        { type: 'separator' }, { role: 'togglefullscreen' }, { role: 'toggleDevTools' },
+      ],
+    },
+    { role: 'windowMenu' },
+  ]
+  Menu.setApplicationMenu(Menu.buildFromTemplate(menu))
+}
+
+function trustedHandler(channel: string, handle: (window: BrowserWindow, value: unknown) => unknown) {
+  ipcMain.handle(channel, (event, value: unknown) => {
+    if (!mainWindow || !isTrustedSender(event)) throw new Error('Untrusted desktop IPC sender')
+    return handle(mainWindow, value)
+  })
+}
+
+function installFileHandlers(workspace: ReturnType<typeof createWorkspaceFile>) {
+  trustedHandler(channels.loadWorkspace, () => workspace.load())
+  trustedHandler(channels.saveWorkspace, (_window, raw) => {
+    if (typeof raw !== 'string') throw new TypeError('Expected serialized workspace')
+    return workspace.save(raw)
+  })
+  trustedHandler(channels.clearWorkspace, () => workspace.clear())
+  trustedHandler(channels.openMarkdownFile, async window => {
+    const { canceled, filePaths } = await dialog.showOpenDialog(window, {
+      properties: ['openFile'],
+      filters: [{ name: 'Markdown', extensions: ['md', 'markdown'] }],
+    })
+    const path = filePaths[0]
+    return canceled || !path ? null : readMarkdownFile(path)
+  })
+  trustedHandler(channels.saveFile, async (window, options) => {
+    if (!isSaveFileOptions(options)) throw new TypeError('Invalid document export')
+    const { canceled, filePath } = await dialog.showSaveDialog(window, {
+      defaultPath: join(app.getPath('documents'), suggestedFileName(options.name, options.format)),
+      filters: [{
+        name: options.format === 'markdown' ? 'Markdown' : options.format.toUpperCase(),
+        extensions: options.format === 'markdown' ? ['md', 'markdown'] : [options.format],
+      }],
+    })
+    if (canceled || !filePath) return false
+    await writeAtomicText(filePath, options.contents)
+    return true
+  })
+}
+
+function flushRenderer(window: BrowserWindow): Promise<void> {
+  const contents = window.webContents
+  if (contents.isCrashed() || !isAppDocument(contents.getURL(), appUrl)) return Promise.resolve()
+  return new Promise(resolve => {
+    function finish() {
+      clearTimeout(timeout)
+      ipcMain.off(channels.workspaceFlushed, acknowledge)
+      resolve()
+    }
+    function acknowledge(event: IpcMainEvent) {
+      if (isTrustedSender(event)) finish()
+    }
+    const timeout = setTimeout(finish, 2000)
+    ipcMain.on(channels.workspaceFlushed, acknowledge)
+    try { contents.send(channels.flushWorkspace) } catch { finish() }
+  })
+}
+
+async function createWindow(
+  statePath: string,
+  workspace: ReturnType<typeof createWorkspaceFile>,
+  theme: ReturnType<typeof installTheme>,
+) {
+  if (openingWindow || mainWindow) return
+  openingWindow = true
+  try {
+    const primary = screen.getPrimaryDisplay()
+    const otherDisplays = screen.getAllDisplays().filter(display => display.id !== primary.id)
+    const raw = await readOptionalText(statePath).catch(() => null)
+    const saved = restoreWindowState(parseWindowState(raw), primary.workArea, otherDisplays.map(display => display.workArea))
+    const window = new BrowserWindow({
+      ...saved.bounds,
+      minWidth: minimumWindowSize.width,
+      minHeight: minimumWindowSize.height,
+      backgroundColor: windowBackground(),
+      show: false,
+      ...(isMac ? { titleBarStyle: 'hiddenInset', trafficLightPosition: { x: 16, y: 17 } } : {}),
+      webPreferences: {
+        preload: join(__dirname, 'preload.cjs'),
+        contextIsolation: true,
+        nodeIntegration: false,
+        sandbox: true,
+      },
+    })
+    mainWindow = window
+    installNavigationPolicy(window)
+    window.once('ready-to-show', () => {
+      if (saved.maximized) window.maximize()
+      window.show()
+    })
+    window.webContents.on('render-process-gone', (_event, details) => reportError(details))
+    let closing = false
+    let closeAllowed = false
+    window.on('close', event => {
+      if (closeAllowed) return
+      event.preventDefault()
+      if (closing) return
+      closing = true
+      const state = { bounds: window.getNormalBounds(), maximized: window.isMaximized() }
+      void Promise.allSettled([
+        flushRenderer(window).then(() => workspace.drain()),
+        writeAtomicText(statePath, JSON.stringify(state)),
+        theme.drain(),
+      ]).then(results => {
+        for (const result of results) {
+          if (result.status === 'rejected') reportError(result.reason)
+        }
+        closeAllowed = true
+        if (quitting) app.quit()
+        else window.close()
+      })
+    })
+    window.on('closed', () => { mainWindow = null })
+    await window.loadURL(appUrl)
+  } finally {
+    openingWindow = false
+  }
+}
+
+if (app.requestSingleInstanceLock()) {
+  app.on('before-quit', () => { quitting = true })
+  process.on('SIGINT', () => app.quit())
+  process.on('SIGTERM', () => app.quit())
+  if (appUrl !== productionPage) process.stdin.once('end', () => app.quit()).resume()
+  app.on('window-all-closed', () => { if (!isMac) app.quit() })
+  void app.whenReady().then(async () => {
+    const directory = app.getPath('userData')
+    const workspace = createWorkspaceFile(join(directory, 'workspace.json'))
+    const statePath = join(directory, 'window-state.json')
+    const themePath = join(directory, 'theme')
+    nativeTheme.themeSource = parseThemeMode(await readOptionalText(themePath).catch(() => null))
+    const theme = installTheme(themePath)
+    const showWindow = () => createWindow(statePath, workspace, theme)
+    installFileHandlers(workspace)
+    installMenu(theme.setTheme)
+    app.on('activate', () => { void showWindow().catch(reportError) })
+    app.on('second-instance', () => {
+      if (!mainWindow) {
+        void showWindow().catch(reportError)
+        return
+      }
+      if (mainWindow.isMinimized()) mainWindow.restore()
+      mainWindow.focus()
+    })
+    await showWindow()
+  }).catch(error => {
+    reportError(error)
+    app.exit(1)
+  })
+} else {
+  app.quit()
+}

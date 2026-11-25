@@ -8,6 +8,7 @@ import { ReactNodeViewRenderer } from '@tiptap/react'
 import type { ColumnEdgeTarget, ColumnLayout, ColumnLayoutInput } from '../types'
 import { ColumnListView } from '../views/column-list-view'
 import { MAX_COLUMNS, normalizeColumnWidths, resizedColumnWidths } from './column-widths'
+import { createNodeIndex, textEdits } from './document-changes'
 
 const columnLayoutKey = new PluginKey('columnLayout')
 
@@ -203,14 +204,12 @@ export const ColumnList = Node.create({
 
   addProseMirrorPlugins() {
     const type = this.type
+    const columns = createNodeIndex(node => node.type === type)
     return [new Plugin({
       key: columnLayoutKey,
       appendTransaction(transactions, _oldState, state) {
-        if (!transactions.some(tr => tr.docChanged || tr.getMeta(columnLayoutKey))) return null
-        const positions: number[] = []
-        state.doc.descendants((node, pos) => {
-          if (node.type === type) positions.push(pos)
-        })
+        if (!transactions.some(tr => tr.getMeta(columnLayoutKey) || (tr.docChanged && textEdits(tr) === null))) return null
+        const positions = columns(state.doc).map(({ pos }) => pos)
 
         const tr = state.tr
         for (const pos of positions.reverse()) {

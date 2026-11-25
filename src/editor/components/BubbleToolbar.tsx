@@ -4,7 +4,7 @@ import { TextSelection } from '@tiptap/pm/state'
 import { Bold, Code, Highlighter, Italic, Link2, MessageSquarePlus, Strikethrough, Underline } from 'lucide-react'
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
-import { useAnchoredPosition, useEditorSnapshot } from './editor-ui'
+import { useAnchoredPosition, useEditorSelector } from './editor-ui'
 
 const marks = [
   ['bold', '加粗', Bold], ['italic', '斜体', Italic], ['underline', '下划线', Underline],
@@ -81,7 +81,8 @@ function BubbleActions({ editor, onComment }: { editor: Editor; onComment: () =>
         <div className="bubble-palette" role="group" aria-label={panel === 'ink' ? '文字色色板' : '高亮色色板'}
           onMouseDown={event => event.preventDefault()}>
           {(panel === 'ink' ? ink : highlighters).map(([label, color]) => (
-            <button key={color} type="button" aria-label={label} title={label} style={{ backgroundColor: color }}
+            <button key={color} type="button" aria-label={label} title={label}
+              data-ink={panel === 'ink' ? color : undefined} data-highlight={panel === 'highlight' ? color : undefined}
               onClick={() => {
                 const chain = editor.chain().focus()
                 if (panel === 'ink') chain.setColor(color).run()
@@ -122,19 +123,24 @@ function BubbleActions({ editor, onComment }: { editor: Editor; onComment: () =>
   )
 }
 
+function selectedText(editor: Editor | null) {
+  const state = editor?.state
+  return state?.selection instanceof TextSelection && !state.selection.empty ? state : null
+}
+
 export function BubbleToolbar({ editor, onComment }: { editor: Editor; onComment: () => void }) {
-  const { selection, doc } = useEditorSnapshot(editor)
+  const state = useEditorSelector(editor, selectedText)
   const layer = useRef<HTMLDivElement>(null)
   const [focused, setFocused] = useState(false)
-  const { from, to } = selection
+  const { from, to } = state?.selection ?? { from: 0, to: 0 }
   let hasCode = false
-  if (selection instanceof TextSelection && !selection.empty) {
-    doc.nodesBetween(from, to, node => {
+  if (state) {
+    state.doc.nodesBetween(from, to, node => {
       if (node.type.spec.code) hasCode = true
       return !hasCode
     })
   }
-  const visible = editor.isEditable && focused && selection instanceof TextSelection && from < to && !hasCode
+  const visible = editor.isEditable && focused && from < to && !hasCode
   const anchor = useMemo(() => visible ? {
     contextElement: editor.view.dom,
     getBoundingClientRect: () => posToDOMRect(editor.view, from, to),

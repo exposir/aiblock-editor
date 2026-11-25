@@ -14,6 +14,13 @@ describe('slash search', () => {
     expect(searchSlashItems(query).map(item => item.label)).toEqual(labels)
   })
 
+  it.each([
+    ['lct', 'mermaid'], ['mermaid', 'mermaid'], ['liuchengtu', 'mermaid'], ['tb', 'mermaid'],
+    ['gs', 'math'], ['math', 'math'], ['gongshi', 'math'], ['latex', 'math'],
+  ])('finds the native Markdown block for %s', (query, id) => {
+    expect(searchSlashItems(query).map(item => item.id)).toEqual([id])
+  })
+
   it('chinese: finds exact labels and the layout synonym', () => {
     expect(searchSlashItems('待办').map(item => item.id)).toEqual(['taskList'])
     expect(searchSlashItems('分栏').map(item => item.id)).toEqual(['columns2', 'columns3'])

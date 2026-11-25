@@ -1,9 +1,43 @@
 import { Fragment, Slice } from '@tiptap/pm/model'
 import type { Fragment as PMFragment, Node as ProseMirrorNode, Schema } from '@tiptap/pm/model'
-import { marked } from 'marked'
+import { Marked } from 'marked'
 import type { Token, Tokens, TokensList } from 'marked'
+import { codeLanguage, isPreviewLanguage } from '../extensions/code-languages'
 import { normalizeColumnWidths } from '../extensions/column-widths'
+import { blockMathAt, findInlineMath, inlineMathAt, inlineMathMarkdown } from '../preview/math-markup'
 import { calloutTheme } from '../types'
+
+const markdownParser = new Marked({
+  extensions: [
+    {
+      name: 'inlineMath',
+      level: 'inline',
+      start: source => findInlineMath(source)?.index,
+      tokenizer(source) {
+        const match = inlineMathAt(source)
+        if (match) return { type: 'inlineMath', ...match }
+        const dollars = /^\${2,}/.exec(source)?.[0]
+        if (dollars) return { type: 'text', text: dollars, raw: dollars }
+      },
+    },
+    {
+      name: 'blockMath',
+      level: 'block',
+      start(source) {
+        for (const line of source.matchAll(/^ {0,3}\$\$/gm)) {
+          if (blockMathAt(source.slice(line.index))) return line.index
+        }
+      },
+      tokenizer(source) {
+        if (!/^ {0,3}\$\$/.test(source)) return
+        const match = blockMathAt(source)
+        if (match) return { type: 'blockMath', ...match }
+      },
+    },
+  ],
+})
+
+const lexInline = (source: string) => markdownParser.Lexer.lexInline(source, markdownParser.defaults)
 
 const DEFAULT_CALLOUT_ICON = '💡'
 const alertThemes: Record<string, string> = {
@@ -59,7 +93,7 @@ export function sanitizeLinkHref(value: string): string | null {
 
 function escapeMarkdownPunctuation(value: string) {
   return value.replace(/\\([!"#$%&'()*+,\-./:;<=>?@[\\\]^_`{|}~])/g, '\\\\$1')
-    .replace(/([\\`*_[\]<>])/g, '\\$1')
+    .replace(/([\\`*_[\]<>$])/g, '\\$1')
 }
 
 function escapeLinkDestination(value: string) {
@@ -107,7 +141,7 @@ function wrapMark(text: string, mark: ProseMirrorNode['marks'][number]) {
   }
 }
 
-function inlineToMarkdown(node: ProseMirrorNode, mode: 'normal' | 'table' = 'normal'): string {
+function inlineToMarkdown(node: ProseMirrorNode, mode: 'normal' | 'table' = 'normal', next = ''): string {
   if (node.isText) {
     let text = node.text ?? ''
     text = mode === 'table' ? escapeTableCell(escapeMarkdownPunctuation(text)) : escapeMarkdownPunctuation(text)
@@ -117,6 +151,11 @@ function inlineToMarkdown(node: ProseMirrorNode, mode: 'normal' | 'table' = 'nor
       return wrapMark(inlineCode(raw), code)
     }
     return sortedMarks(node).reduce((value, mark) => wrapMark(value, mark), text)
+  }
+  if (node.type.name === 'inlineMath') {
+    const math = inlineMathMarkdown(String(node.attrs.latex), next)
+    const content = mode === 'table' ? math.replace(/\|/g, '\\|') : math
+    return sortedMarks(node).reduce((value, mark) => wrapMark(value, mark), content)
   }
   if (node.type.name === 'hardBreak') return mode === 'table' ? '<br>' : '  \n'
   if (node.type.name === 'image') {
@@ -128,8 +167,9 @@ function inlineToMarkdown(node: ProseMirrorNode, mode: 'normal' | 'table' = 'nor
 
 function inlineContent(node: ProseMirrorNode, mode: 'normal' | 'table' = 'normal') {
   const parts: string[] = []
-  node.forEach(child => {
-    parts.push(inlineToMarkdown(child, mode))
+  node.forEach((child, _offset, index) => {
+    const next = node.maybeChild(index + 1)
+    parts.push(inlineToMarkdown(child, mode, next?.type.name === 'inlineMath' ? '$' : next?.text ?? ''))
   })
   return parts.join('')
 }
@@ -144,7 +184,12 @@ function blockToMarkdown(node: ProseMirrorNode): string {
     case 'blockquote': return prefixLines(childrenToMarkdown(node), '> ')
     case 'codeBlock': {
       const fence = '`'.repeat(Math.max(3, longestBacktickRun(node.textContent) + 1))
-      const language = String(node.attrs.language ?? '')
+      const original = String(node.attrs.language ?? '')
+      const normalized = codeLanguage(original)
+      const language = isPreviewLanguage(normalized) ? normalized : original
+      if (normalized === 'math' && !/^ {0,3}\$\$[ \t]*$/m.test(node.textContent)) {
+        return `$$\n${node.textContent}\n$$`
+      }
       return `${fence}${language}\n${node.textContent}\n${fence}`
     }
     case 'horizontalRule': return '---'
@@ -328,6 +373,26 @@ function extractCustomBlocks(markdown: string): { markdown: string; blocks: Pars
   const prefix = customTokenPrefix(markdown)
   let index = 0
   while (index < lines.length) {
+    const opening = /^ {0,3}(`{3,}|~{3,})/.exec(lines[index]!)?.[1]
+    if (opening) {
+      const closing = new RegExp(`^ {0,3}${opening[0]}{${opening.length},}[ \t]*$`)
+      rendered.push(lines[index++]!)
+      while (index < lines.length) {
+        const line = lines[index++]!
+        rendered.push(line)
+        if (closing.test(line)) break
+      }
+      continue
+    }
+    if (/^ {0,3}\$\$[ \t]*$/.test(lines[index]!)) {
+      let end = index + 1
+      while (end < lines.length && !/^ {0,3}\$\$[ \t]*$/.test(lines[end]!)) end++
+      if (end < lines.length) {
+        rendered.push(...lines.slice(index, end + 1))
+        index = end + 1
+        continue
+      }
+    }
     const callout = takeCallout(lines, index)
     if (callout) {
       const token = `${prefix}${blocks.length}%%`
@@ -378,7 +443,7 @@ function parseHtmlInline(schema: Schema, text: string): PMFragment {
   let match: RegExpExecArray | null
   while ((match = pattern.exec(text))) {
     const before = text.slice(last, match.index)
-    if (before) parts.push(parseInlineMarks(schema, marked.Lexer.lexInline(before), stack.map(name => schema.marks[name]!.create())))
+    if (before) parts.push(parseInlineMarks(schema, lexInline(before), stack.map(name => schema.marks[name]!.create())))
     if (match[1]) stack.push(match[1].toLowerCase() === 'u' ? 'underline' : 'highlight')
     else {
       const name = match[2]?.toLowerCase() === 'u' ? 'underline' : 'highlight'
@@ -387,7 +452,7 @@ function parseHtmlInline(schema: Schema, text: string): PMFragment {
     }
     last = pattern.lastIndex
   }
-  if (last < text.length) parts.push(parseInlineMarks(schema, marked.Lexer.lexInline(text.slice(last)), stack.map(name => schema.marks[name]!.create())))
+  if (last < text.length) parts.push(parseInlineMarks(schema, lexInline(text.slice(last)), stack.map(name => schema.marks[name]!.create())))
   return Fragment.fromArray(parts.flatMap(fragment => fragment.content))
 }
 
@@ -438,6 +503,11 @@ function parseInlineMarks(schema: Schema, tokens: readonly Token[], inherited: P
       case 'strong': return parseInlineMarks(schema, token.tokens ?? [], [...inherited, schema.marks.bold!.create()]).content
       case 'em': return parseInlineMarks(schema, token.tokens ?? [], [...inherited, schema.marks.italic!.create()]).content
       case 'del': return parseInlineMarks(schema, token.tokens ?? [], [...inherited, schema.marks.strike!.create()]).content
+      case 'inlineMath': {
+        const latex = String(token.latex)
+        const type = schema.nodes.inlineMath
+        return type ? [type.create({ latex }, undefined, inherited)] : [schema.text(token.raw, inherited)]
+      }
       case 'codespan': return [schema.text(token.text, [schema.marks.code!.create()])]
       case 'link': {
         const mark = linkMark(schema, token.href)
@@ -530,9 +600,18 @@ function tokenToBlocks(schema: Schema, tokens: readonly Token[], ctx: MarkdownCo
       case 'list':
         blocks.push(parseList(schema, token as Tokens.List, ctx))
         break
-      case 'code':
-        blocks.push(schema.nodes.codeBlock!.create({ language: token.lang || 'plaintext' }, token.text ? schema.text(token.text) : null))
+      case 'blockMath': {
+        const latex = String(token.latex)
+        blocks.push(schema.nodes.codeBlock!.create({ language: 'math' }, latex ? schema.text(latex) : null))
         break
+      }
+      case 'code': {
+        const original = token.lang || 'plaintext'
+        const normalized = codeLanguage(original)
+        const language = isPreviewLanguage(normalized) ? normalized : original
+        blocks.push(schema.nodes.codeBlock!.create({ language }, token.text ? schema.text(token.text) : null))
+        break
+      }
       case 'table': {
         const table = parseTable(schema, token as Tokens.Table)
         if (table) blocks.push(table)
@@ -604,7 +683,7 @@ function parseMarkdownBlocks(schema: Schema, markdown: string, ctx: MarkdownCont
   const extracted = extractCustomBlocks(markdown)
   const merged = new Map<string, CustomBlock>(ctx.blocks)
   for (const block of extracted.blocks) merged.set(block.token, block.value)
-  const tokens = marked.Lexer.lex(extracted.markdown) as TokensList
+  const tokens = markdownParser.lexer(extracted.markdown) as TokensList
   return tokenToBlocks(schema, tokens, { blocks: merged })
 }
 
@@ -612,8 +691,9 @@ export function markdownToSlice(schema: Schema, markdown: string): Slice {
   const blocks = parseMarkdownBlocks(schema, markdown, { blocks: new Map() })
   const doc = schema.topNodeType.create(null, Fragment.fromArray(blocks))
   const content = doc.content
-  const openStart = content.firstChild?.isTextblock || content.firstChild?.type.name === 'heading' ? 1 : 0
-  const openEnd = content.lastChild?.isTextblock || content.lastChild?.type.name === 'heading' ? 1 : 0
+  const open = (node: ProseMirrorNode | null) => node?.isTextblock && node.type.name !== 'codeBlock' ? 1 : 0
+  const openStart = open(content.firstChild)
+  const openEnd = open(content.lastChild)
   return new Slice(content, openStart, openEnd)
 }
 

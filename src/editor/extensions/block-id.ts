@@ -3,6 +3,7 @@ import type { Node as ProseMirrorNode } from '@tiptap/pm/model'
 import { Plugin, PluginKey } from '@tiptap/pm/state'
 import type { OutlineEntry } from '../types'
 import { blockNodeTypes } from './block-range'
+import { createNodeIndex, textEdits } from './document-changes'
 
 const blockIdKey = new PluginKey('blockId')
 
@@ -17,16 +18,14 @@ function newBlockId(): string {
   ).join('')
 }
 
+const headings = createNodeIndex(node => node.type.name === 'heading')
+
 export function extractOutline(doc: ProseMirrorNode): OutlineEntry[] {
-  const outline: OutlineEntry[] = []
-  doc.descendants((node, pos) => {
+  return headings(doc).flatMap(({ node, pos }) => {
     const blockId = readId(node.attrs.blockId)
     const level: unknown = node.attrs.level
-    if (node.type.name === 'heading' && blockId && typeof level === 'number') {
-      outline.push({ blockId, level, text: node.textContent, pos })
-    }
+    return blockId && typeof level === 'number' ? [{ blockId, level, text: node.textContent, pos }] : []
   })
-  return outline
 }
 
 export const BlockIdExtension = Extension.create({
@@ -60,7 +59,7 @@ export const BlockIdExtension = Extension.create({
     return [new Plugin({
       key: blockIdKey,
       appendTransaction(transactions, _oldState, state) {
-        if (!transactions.some(tr => tr.docChanged || tr.getMeta(blockIdKey))) return null
+        if (!transactions.some(tr => tr.getMeta(blockIdKey) || (tr.docChanged && textEdits(tr) === null))) return null
 
         const reserved = new Set<string>()
         const missing: number[] = []

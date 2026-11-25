@@ -28,7 +28,7 @@ export function WorkspaceDialog({ request, workspace, onClose, onConfirm }: {
     <dialog ref={ref} className="shortcut-dialog reset-dialog" aria-labelledby="workspace-dialog-heading"
       aria-describedby={destructive ? 'workspace-dialog-description' : undefined} onClose={onClose}>
       <div className="sidebar-heading"><h2 id="workspace-dialog-heading">{titles[request.kind]}</h2></div>
-      {request.kind === 'reset' && <p id="workspace-dialog-description">本地保存的页面和评论将被清除，并恢复四个示例页面。</p>}
+      {request.kind === 'reset' && <p id="workspace-dialog-description">本地保存的页面和评论将被清除，并恢复五个示例页面。</p>}
       {request.kind === 'delete' && <p id="workspace-dialog-description">
         将永久删除「{title}」{descendants > 0 && `及其 ${descendants} 个子页面`}。
       </p>}

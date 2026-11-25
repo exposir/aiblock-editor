@@ -12,7 +12,10 @@
     "dev": "vite",
     "build": "vite build",
     "test": "vitest run",
-    "test:coverage": "vitest run --coverage"
+    "test:coverage": "vitest run --coverage",
+    "electron:build": "node scripts/build-electron.mjs && vite build",
+    "electron:dev": "node scripts/dev-electron.mjs",
+    "electron:pack": "pnpm electron:build && electron-builder --dir"
   },
   "dependencies": {
     "@floating-ui/dom": "1.8.0",
@@ -35,9 +38,11 @@
     "@tiptap/react": "3.35.0",
     "@tiptap/starter-kit": "3.35.0",
     "@tiptap/suggestion": "3.35.0",
+    "katex": "0.19.1",
     "lowlight": "3.3.0",
     "lucide-react": "1.78.0",
     "marked": "18.3.0",
+    "mermaid": "12.3.0",
     "pinyin-pro": "3.29.5",
     "react": "19.3.1",
     "react-dom": "19.3.1"
@@ -47,10 +52,13 @@
     "@testing-library/jest-dom": "6.8.0",
     "@testing-library/react": "16.3.3",
     "@testing-library/user-event": "14.6.13",
+    "@types/katex": "0.16.8",
     "@types/node": "26.6.6",
     "@types/react": "19.3.0",
     "@types/react-dom": "19.3.0",
     "@vitest/coverage-v8": "5.1.1",
+    "electron": "45.4.1",
+    "electron-builder": "26.18.0",
     "fast-check": "4.11.0",
     "jsdom": "26.1.0",
     "postcss": "8.5.33",
@@ -58,5 +66,28 @@
     "typescript": "6.0.3",
     "vite": "7.3.8",
     "vitest": "5.1.1"
+  },
+  "main": "dist-electron/main.cjs",
+  "build": {
+    "appId": "com.larkblockeditor.desktop",
+    "productName": "Lark Block Editor",
+    "directories": {
+      "output": "release"
+    },
+    "files": [
+      "dist/**",
+      "dist-electron/**",
+      "!node_modules/**"
+    ],
+    "npmRebuild": false,
+    "mac": {
+      "target": [
+        "dir",
+        "dmg"
+      ],
+      "category": "public.app-category.productivity",
+      "identity": "-",
+      "notarize": false
+    }
   }
 }

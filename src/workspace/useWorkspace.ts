@@ -1,7 +1,10 @@
+import type { JSONContent } from '@tiptap/core'
 import type { Schema } from '@tiptap/pm/model'
 import { useCallback, useEffect, useRef, useState } from 'react'
-import { DEMO_HANDBOOK_ID, createDemoWorkspace } from './demo-workspace'
-import { activatePage, clearWorkspace, findPage, formatPageHash, loadWorkspace, parseLegacyBlockHash, parsePageHash, saveWorkspace } from './page-store'
+import { browserWorkspaceStorage } from '../desktop/bridge'
+import type { WorkspacePersistence } from '../desktop/bridge'
+import { DEMO_HANDBOOK_ID, createDemoWorkspace, upgradeDemoWorkspace } from './demo-workspace'
+import { WORKSPACE_STORAGE_KEY, activatePage, findPage, formatPageHash, parseLegacyBlockHash, parsePageHash, restoreWorkspace, updatePage } from './page-store'
 import type { PageIdentity, WorkspaceState } from './page-store'
 
 const SAVE_DELAY = 350
@@ -39,23 +42,63 @@ function syncLocation(pageId: string, blockId: string | null, mode: 'push' | 're
   else window.history.replaceState(window.history.state, '', hash)
 }
 
-export function useWorkspace(schema: Schema) {
-  const [storage] = useState(localStorageOrNull)
-  const [snapshot, setSnapshot] = useState(() => ({
-    ...fromLocation(loadWorkspace(storage, schema, () => createDemoWorkspace(schema))),
-    revision: 0,
-  }))
+export function useWorkspace(schema: Schema, persistence?: WorkspacePersistence) {
+  const [storage] = useState(() => persistence ?? browserWorkspaceStorage(localStorageOrNull(), WORKSPACE_STORAGE_KEY))
+  const [snapshot, setSnapshot] = useState(() => {
+    const workspace = restoreWorkspace(storage.read(), schema, () => createDemoWorkspace(schema))
+    return { ...fromLocation(upgradeDemoWorkspace(schema, workspace)), revision: 0 }
+  })
   const [saveFailed, setSaveFailed] = useState(false)
   const current = useRef(snapshot)
   const pending = useRef(true)
+  const draft = useRef<{ id: string; read: () => JSONContent; updatedAt: number } | null>(null)
   const timer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined)
+
+  const inFlight = useRef<Promise<void> | undefined>(undefined)
+
+  const collect = useCallback(() => {
+    const previous = current.current
+    const editing = draft.current
+    if (!editing) return previous
+    const workspace = updatePage(previous.workspace, editing.id, { content: editing.read() }, editing.updatedAt)
+    draft.current = null
+    return { ...previous, workspace }
+  }, [])
 
   const flush = useCallback(() => {
     clearTimeout(timer.current)
-    if (!pending.current) return
-    pending.current = !saveWorkspace(storage, current.current.workspace)
-    setSaveFailed(pending.current)
-  }, [storage])
+    const next = collect()
+    if (next !== current.current) {
+      current.current = next
+      setSnapshot(next)
+    }
+    if (!pending.current) return inFlight.current
+    pending.current = false
+    const result = storage.write(JSON.stringify(current.current.workspace))
+    if (typeof result === 'boolean') {
+      pending.current = !result
+      setSaveFailed(!result)
+      return
+    }
+
+    function finish(saved: boolean) {
+      if (inFlight.current !== attempt) return
+      inFlight.current = undefined
+      pending.current ||= !saved
+      setSaveFailed(!saved)
+    }
+    const attempt = result.then(() => finish(true), () => finish(false))
+    inFlight.current = attempt
+    return attempt
+  }, [collect, storage])
+
+  const stageContent = useCallback((id: string, read: () => JSONContent) => {
+    if (current.current.revision !== snapshot.revision || current.current.workspace.activePageId !== id) return
+    draft.current = { id, read, updatedAt: Date.now() }
+    pending.current = true
+    clearTimeout(timer.current)
+    timer.current = setTimeout(flush, SAVE_DELAY)
+  }, [flush, snapshot.revision])
 
   const publish = useCallback((next: typeof snapshot, deferred = false) => {
     pending.current ||= next.workspace !== current.current.workspace
@@ -68,10 +111,10 @@ export function useWorkspace(schema: Schema) {
 
   useEffect(() => {
     function followLocation() {
-      const previous = current.current
+      const previous = collect()
       const next = fromLocation(previous.workspace)
       syncLocation(next.workspace.activePageId, next.anchor?.id ?? null, 'replace')
-      if (next.workspace !== previous.workspace || next.anchor !== previous.anchor) {
+      if (next.workspace !== current.current.workspace || next.anchor !== previous.anchor) {
         publish({ ...previous, ...next })
       }
     }
@@ -82,23 +125,31 @@ export function useWorkspace(schema: Schema) {
     history.scrollRestoration = 'manual'
     syncLocation(current.current.workspace.activePageId, current.current.anchor?.id ?? null, 'replace')
     flush()
+    const unsubscribe = storage.onClosing?.(flush)
     window.addEventListener('hashchange', followLocation)
     window.addEventListener('pagehide', flush)
     document.addEventListener('visibilitychange', onVisibilityChange)
     return () => {
+      unsubscribe?.()
       history.scrollRestoration = restoration
       window.removeEventListener('hashchange', followLocation)
       window.removeEventListener('pagehide', flush)
       document.removeEventListener('visibilitychange', onVisibilityChange)
       clearTimeout(timer.current)
     }
-  }, [flush, publish])
+  }, [collect, flush, publish, storage])
 
   function change(transform: (workspace: WorkspaceState) => WorkspaceState, deferred = false) {
-    const previous = current.current
-    if (snapshot.revision !== previous.revision) return
-    const workspace = transform(previous.workspace)
-    if (workspace === previous.workspace) return
+    if (snapshot.revision !== current.current.revision) return
+    const previous = collect()
+    let workspace = previous.workspace
+    try {
+      workspace = transform(workspace)
+    } catch (error) {
+      if (previous !== current.current) publish(previous, true)
+      throw error
+    }
+    if (workspace === current.current.workspace) return
     const switched = workspace.activePageId !== previous.workspace.activePageId
     publish({ ...previous, workspace, anchor: switched ? null : previous.anchor }, deferred && !switched)
     if (switched) syncLocation(workspace.activePageId, null, 'push')
@@ -106,10 +157,11 @@ export function useWorkspace(schema: Schema) {
 
   function reset() {
     const workspace = createDemoWorkspace(schema)
-    clearWorkspace(storage)
+    draft.current = null
+    storage.clear()
     publish({ workspace, anchor: null, revision: current.current.revision + 1 })
     syncLocation(workspace.activePageId, null, 'replace')
   }
 
-  return { ...snapshot, saveFailed, change, reset }
+  return { ...snapshot, saveFailed, change, reset, stageContent }
 }

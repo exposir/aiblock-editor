@@ -3,6 +3,7 @@ import type { Mark as ProseMirrorMark, MarkType, Node as ProseMirrorNode } from 
 import { Plugin, PluginKey, TextSelection } from '@tiptap/pm/state'
 import type { Transaction } from '@tiptap/pm/state'
 import { Decoration, DecorationSet } from '@tiptap/pm/view'
+import { textEdits } from './document-changes'
 
 interface CommentState {
   readonly active: string | null
@@ -148,8 +149,22 @@ export const CommentMark = Mark.create({
           }
           const selected = meta?.active !== undefined ? meta.active : last.active
           const active = selected && !retired.has(selected) ? selected : null
+          if (!active) return { active, retired, decorations: DecorationSet.empty }
+          const edits = active === last.active ? textEdits(tr) : null
+          if (edits) {
+            let decorations = last.decorations.map(tr.mapping, tr.doc)
+            for (const { node, pos } of edits) {
+              const start = pos + 1
+              const ranges: Decoration[] = []
+              visitComments(node, type, (mark, from, to) => {
+                if (mark.attrs.commentId === active) ranges.push(Decoration.inline(start + from, start + to, { class: 'comment-active' }))
+              })
+              decorations = decorations.remove(decorations.find(start, pos + node.nodeSize - 1)).add(tr.doc, ranges)
+            }
+            return { active, retired, decorations }
+          }
           const ranges: Decoration[] = []
-          if (active) visitComments(tr.doc, type, (mark, from, to) => {
+          visitComments(tr.doc, type, (mark, from, to) => {
             if (mark.attrs.commentId === active) ranges.push(Decoration.inline(from, to, { class: 'comment-active' }))
           })
           return { active, retired, decorations: DecorationSet.create(tr.doc, ranges) }
@@ -160,6 +175,13 @@ export const CommentMark = Mark.create({
         const retired = commentKey.getState(state)?.retired
         if (!retired?.size || !transactions.some(tr => tr.docChanged)) return null
         const tr = state.tr
+        const mayRestoreComment = transactions.some(transaction => {
+          if (!transaction.docChanged) return false
+          const edits = textEdits(transaction)
+          return !edits || edits.some(({ node }) => node.children.some(child =>
+            child.marks.some(mark => mark.type === type && retired.has(mark.attrs.commentId))))
+        })
+        if (!mayRestoreComment) return null
         removeComments(tr, type, retired)
         return tr.docChanged ? tr.setMeta('addToHistory', false) : null
       },

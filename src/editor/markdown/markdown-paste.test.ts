@@ -67,6 +67,17 @@ describe('MarkdownPaste', () => {
     expect(instance.state.doc.textContent).toContain('const x = 1')
   })
 
+  it('pastes inline and display formulas as native nodes and undoes them together', () => {
+    const instance = editor()
+    expect(paste(instance, '定义 $f(x)$。\n\n$$\nf(x)=x^2\n$$')).toBe(true)
+    expect(instance.state.doc.firstChild?.child(1).attrs.latex).toBe('f(x)')
+    expect(instance.state.doc.lastChild?.attrs.language).toBe('math')
+    expect(instance.state.doc.lastChild?.textContent).toBe('f(x)=x^2')
+    expect(instance.commands.undo()).toBe(true)
+    expect(instance.state.doc.childCount).toBe(1)
+    expect(instance.state.doc.firstChild?.content.size).toBe(0)
+  })
+
   it('does not intercept html-rich clipboard data', () => {
     const instance = editor()
     const richer = '<p><strong>already formatted</strong></p>'

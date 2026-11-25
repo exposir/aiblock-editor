@@ -90,7 +90,8 @@ export function BlockHandleOverlay({ editor, surface, host, blockHash, onQuickIn
     return layer.current ? overlayOrigin(layer.current) : null
   }
 
-  function showBlock(block: MeasuredBlock | null) {
+  function measureActive(block: MeasuredBlock | null) {
+    if (!block && !activeRef.current) return
     const origin = layerOrigin()
     if (!origin) return
     const next = block ? {
@@ -98,11 +99,17 @@ export function BlockHandleOverlay({ editor, surface, host, blockHash, onQuickIn
       local: offsetRect(block.rect, origin),
       handleTop: firstLineCenter(block.element) - origin.y - handleHeight / 2,
     } : null
-    const current = activeRef.current
-    if (next?.element === current?.element && next?.pos === current?.pos &&
-        next?.local.left === current?.local.left && next?.handleTop === current?.handleTop) return
-    activeRef.current = next
-    setActive(next)
+    return () => {
+      const current = activeRef.current
+      if (next?.element === current?.element && next?.pos === current?.pos &&
+          next?.local.left === current?.local.left && next?.handleTop === current?.handleTop) return
+      activeRef.current = next
+      setActive(next)
+    }
+  }
+
+  function showBlock(block: MeasuredBlock | null) {
+    measureActive(block)?.()
   }
 
   function setMenu(open: boolean) {
@@ -149,6 +156,7 @@ export function BlockHandleOverlay({ editor, surface, host, blockHash, onQuickIn
     if (!shell || !win) return
     let lastMove: PointerEvent | null = null
     let frame = 0
+    let hoverLayout: { blocks: MeasuredBlock[]; x: number; y: number } | undefined
 
     function setSelection(selection: Selection) {
       if (!editor.state.selection.eq(selection)) editor.view.dispatch(editor.state.tr.setSelection(selection))
@@ -203,20 +211,19 @@ export function BlockHandleOverlay({ editor, surface, host, blockHash, onQuickIn
       if (!editor.isEditable || menuRef.current) return
       const target = event.target
       if (target instanceof Node && layer.current?.contains(target)) return
-      const bounds = shell!.getBoundingClientRect()
-      if (point.y < bounds.top || point.y > bounds.bottom) {
-        showBlock(null)
-        return
-      }
-      const block = hitBlock(measureBlocks(editor.view), point)
-      if (block) {
-        showBlock(block)
-        return
-      }
+      const x = win!.scrollX
+      const y = win!.scrollY
+      const layout = hoverLayout ??= { blocks: measureBlocks(editor.view), x, y }
+      const at = { x: point.x + x - layout.x, y: point.y + y - layout.y }
+      const block = hitBlock(layout.blocks, at)
       const prior = activeRef.current
-      const rect = prior?.rect
-      if (!rect || point.x < rect.left - handleWidth - 8 || point.x > rect.left ||
-          point.y < rect.top || point.y > Math.max(rect.bottom, rect.top + 28)) showBlock(null)
+      if (block) {
+        if (block.element !== prior?.element || block.pos !== prior.pos) showBlock(measureBlock(editor.view, block.pos))
+        return
+      }
+      const rect = layout.blocks.find(item => item.element === prior?.element)?.rect
+      if (!rect || at.x < rect.left - handleWidth - 8 || at.x > rect.left ||
+          at.y < rect.top || at.y > Math.max(rect.bottom, rect.top + 28)) showBlock(null)
     }
 
     function queuePointer(event: PointerEvent) {
@@ -228,13 +235,19 @@ export function BlockHandleOverlay({ editor, surface, host, blockHash, onQuickIn
       })
     }
 
+    function invalidateHover() {
+      hoverLayout = undefined
+    }
+
     function refreshLayout() {
       const prior = activeRef.current
-      if (prior) {
-        const pos = blockPosition(prior)
-        showBlock(pos === null ? null : measureBlock(editor.view, pos))
+      const pos = prior ? blockPosition(prior) : null
+      const commit = prior && measureActive(pos === null ? null : measureBlock(editor.view, pos))
+      return () => {
+        invalidateHover()
+        commit?.()
+        if (gesture.current && lastMove) queuePointer(lastMove)
       }
-      if (gesture.current && lastMove) queuePointer(lastMove)
     }
 
     function followDragScroll() {
@@ -318,9 +331,9 @@ export function BlockHandleOverlay({ editor, surface, host, blockHash, onQuickIn
     doc.addEventListener('pointercancel', finish)
     doc.addEventListener('lostpointercapture', finish)
     doc.addEventListener('keydown', escape, true)
-    win.addEventListener('scroll', followDragScroll, true)
+    win.addEventListener('scroll', followDragScroll, { capture: true, passive: true })
     editor.on('selectionUpdate', showSelected)
-    editor.on('update', refreshLayout)
+    editor.on('update', invalidateHover)
     return () => {
       win.cancelAnimationFrame(frame)
       stopLayout()
@@ -332,7 +345,7 @@ export function BlockHandleOverlay({ editor, surface, host, blockHash, onQuickIn
       doc.removeEventListener('keydown', escape, true)
       win.removeEventListener('scroll', followDragScroll, true)
       editor.off('selectionUpdate', showSelected)
-      editor.off('update', refreshLayout)
+      editor.off('update', invalidateHover)
     }
   }, [editor, surface])
 

@@ -58,7 +58,7 @@ function Harness({ initial, startCommentsOpen = false, onImport = () => {}, onEd
     <>
       <PageEditor key={active.id} page={active} extensions={extensions} anchor={null} commentsOpen={commentsOpen}
         onCommentsOpen={setCommentsOpen} onEditorReady={(_id, editor) => onEditor?.(editor)}
-        onEdit={edit} onImport={onImport} />
+        onEdit={edit} onStageContent={(id, read) => edit(id, { content: read() })} onImport={onImport} />
       <button type="button" onClick={() => setActiveId(current => {
         const index = initial.findIndex(page => page.id === current)
         return initial[(index + 1) % initial.length]!.id
@@ -225,6 +225,7 @@ describe('PageEditor page isolation', () => {
 
     await userEvent.setup().click(screen.getByRole('button', { name: '切换页面' }))
     await waitFor(() => expect(screen.getByRole('textbox', { name: '文档正文' })).toHaveTextContent('B content'))
+    await waitFor(() => expect(first.options.element).toBeNull())
     expect(screen.getByRole('textbox', { name: '文档正文' })).not.toHaveTextContent('MARKER')
     expect(screen.getByRole('complementary', { name: '评论' })).toHaveTextContent('B content')
     expect(screen.getByRole('complementary', { name: '评论' })).not.toHaveTextContent('A content')

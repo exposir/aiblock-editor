@@ -1,10 +1,14 @@
 import { getSchema } from '@tiptap/core'
 import type { Editor } from '@tiptap/core'
-import { Check, ChevronDown, ChevronRight, ClipboardCopy, Download, FileDown, FileUp, Keyboard, List, MessagesSquare, PanelLeft, RotateCcw, X } from 'lucide-react'
-import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react'
+import { Check, ChevronDown, ChevronRight, ClipboardCopy, Download, FileDown, FileUp, Keyboard, List, MessagesSquare, Monitor, Moon, PanelLeft, RotateCcw, Sun, X } from 'lucide-react'
+import { useCallback, useEffect, useEffectEvent, useLayoutEffect, useRef, useState } from 'react'
+import { getDesktopBridge, openDesktopWorkspaceStorage, openMarkdownFile, saveDocumentFile, suggestedFileName } from './desktop/bridge'
+import type { DesktopBridge, DesktopMenuCommand, DocumentFileFormat, MarkdownFile, WorkspacePersistence } from './desktop/bridge'
 import { createEditorExtensions } from './editor/extensions'
 import { docToMarkdown } from './editor/markdown/markdown-codec'
-import { downloadMarkdown, isMarkdownFile } from './editor/markdown/markdown-files'
+import { downloadBlob, isMarkdownFile } from './editor/markdown/markdown-files'
+import { isThemeMode, readThemeMode, syncTheme, themeLabels } from './theme/theme'
+import type { ThemeMode } from './theme/theme'
 import { PageEditor } from './workspace/PageEditor'
 import type { EditPage } from './workspace/PageEditor'
 import { WorkspaceDialog } from './workspace/WorkspaceDialog'
@@ -25,7 +29,28 @@ function wideViewport() {
   return window.matchMedia('(min-width: 1080px)').matches
 }
 
-function Workspace({ workspace, anchor, saveFailed, change, reset }: ReturnType<typeof useWorkspace>) {
+interface Appearance {
+  readonly mode: ThemeMode
+  setMode(mode: ThemeMode): void
+}
+
+const themeControls = {
+  system: { icon: Monitor, next: 'light' },
+  light: { icon: Sun, next: 'dark' },
+  dark: { icon: Moon, next: 'system' },
+} as const
+
+function ThemeControl({ mode, setMode }: Appearance) {
+  const { icon: Icon, next } = themeControls[mode]
+  const label = `外观：${themeLabels[mode]}，切换为${themeLabels[next]}`
+  return <button type="button" className="icon-control" aria-label={label} title={label} onClick={() => setMode(next)}>
+    <Icon size={18} aria-hidden="true" />
+  </button>
+}
+
+function Workspace({ workspace, anchor, saveFailed, change, reset, stageContent, appearance }: ReturnType<typeof useWorkspace> & {
+  appearance: Appearance
+}) {
   const help = useRef<HTMLDialogElement>(null)
   const titleInput = useRef<HTMLInputElement>(null)
   const focusTitleFor = useRef<string | null>(null)
@@ -126,14 +151,16 @@ function Workspace({ workspace, anchor, saveFailed, change, reset }: ReturnType<
         if (!wideViewport()) setNavigationOpen(false)
         return
       case 'export':
-        downloadMarkdown(documentFor(page), pageTitle(page))
+        void exportPage(page, 'markdown')
         return
-      case 'delete':
-        if (!hasPageContent(page) && pageTitle(page) === DEFAULT_PAGE_TITLE && !workspace.pages.some(child => child.parentId === id)) {
+      case 'delete': {
+        const candidate = id === activePage.id && editor ? { ...page, content: editor.getJSON() } : page
+        if (!hasPageContent(candidate) && pageTitle(page) === DEFAULT_PAGE_TITLE && !workspace.pages.some(child => child.parentId === id)) {
           change(current => removePage(current, id, newPageIdentity()))
           return
         }
         break
+      }
     }
     setDialog({ kind: action, pageId: id })
   }
@@ -148,12 +175,12 @@ function Workspace({ workspace, anchor, saveFailed, change, reset }: ReturnType<
     }
   }
 
-  async function chooseMarkdownFile(file: File | undefined) {
-    if (!file || !isMarkdownFile(file)) return
+  async function importFile(read: () => Promise<MarkdownFile | null>) {
     setNotice('')
     try {
-      const markdown = await file.text()
-      change(current => importMarkdownPage(current, schema, newPageIdentity(), file.name, markdown))
+      const file = await read()
+      if (!file) return
+      change(current => importMarkdownPage(current, schema, newPageIdentity(), file.name, file.contents))
       if (!wideViewport()) setNavigationOpen(false)
       setToolsOpen(false)
     } catch {
@@ -161,18 +188,43 @@ function Workspace({ workspace, anchor, saveFailed, change, reset }: ReturnType<
     }
   }
 
-  function exportJSON() {
-    const name = pageTitle(activePage)
-    const data = { title: name, document: documentFor(activePage).toJSON(), comments: activePage.comments }
-    const url = URL.createObjectURL(new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' }))
-    const link = document.createElement('a')
-    link.href = url
-    link.download = `${name.replace(/[\\/:*?"<>|]/g, '_')}.json`
-    document.body.append(link)
-    link.click()
-    link.remove()
-    setTimeout(() => URL.revokeObjectURL(url), 0)
+  function chooseMarkdownFile(file: File | undefined) {
+    if (file && isMarkdownFile(file)) return importFile(async () => ({ name: file.name, contents: await file.text() }))
   }
+
+  function pickMarkdown() {
+    void importFile(() => openMarkdownFile(() => markdownInput.current?.click()))
+  }
+
+  async function exportPage(page: PageRecord, format: DocumentFileFormat) {
+    setToolsOpen(false)
+    try {
+      const name = pageTitle(page)
+      const doc = documentFor(page)
+      const contents = format === 'markdown' ? docToMarkdown(doc)
+        : JSON.stringify({ title: name, document: doc.toJSON(), comments: page.comments }, null, 2)
+      await saveDocumentFile({ name, format, contents }, file => {
+        const type = file.format === 'markdown' ? 'text/markdown;charset=utf-8' : 'application/json'
+        downloadBlob(new Blob([file.contents], { type }), suggestedFileName(file.name, file.format))
+      })
+    } catch {
+      setNotice(format === 'markdown' ? '无法导出 Markdown。' : '无法导出 JSON。')
+    }
+  }
+
+  const runMenuCommand = useEffectEvent((command: DesktopMenuCommand) => {
+    switch (command) {
+      case 'new-page': newPage(null); break
+      case 'import-markdown': pickMarkdown(); break
+      case 'export-markdown': void exportPage(activePage, 'markdown'); break
+      case 'export-json': void exportPage(activePage, 'json'); break
+      case 'toggle-pages': toggleNavigation('pages'); break
+      case 'toggle-outline': toggleNavigation('outline'); break
+      case 'toggle-comments': showComments(!commentsOpen); break
+    }
+  })
+
+  useEffect(() => getDesktopBridge()?.onMenuCommand(command => runMenuCommand(command)), [])
 
   async function copyMarkdown() {
     clearTimeout(copyTimer.current)
@@ -215,6 +267,7 @@ function Workspace({ workspace, anchor, saveFailed, change, reset }: ReturnType<
             aria-controls={commentsOpen ? 'document-comments' : undefined} onClick={() => showComments(!commentsOpen)}>
             <MessagesSquare size={18} aria-hidden="true" />
           </button>
+          <ThemeControl {...appearance} />
           <button type="button" className="icon-control" aria-label="快捷键" title="快捷键"
             onClick={() => help.current?.showModal()}><Keyboard size={18} aria-hidden="true" /></button>
           <div className="workspace-export" ref={toolsMenu}>
@@ -225,17 +278,17 @@ function Workspace({ workspace, anchor, saveFailed, change, reset }: ReturnType<
             </button>
             {toolsOpen && (
               <div className="export-menu" role="group" aria-label="导入与导出">
-                <button type="button" onClick={() => markdownInput.current?.click()}>
+                <button type="button" onClick={pickMarkdown}>
                   <FileUp size={15} aria-hidden="true" /><span>导入 Markdown</span><small>.md</small>
                 </button>
-                <button type="button" onClick={() => { downloadMarkdown(documentFor(activePage), pageTitle(activePage)); setToolsOpen(false) }}>
+                <button type="button" onClick={() => void exportPage(activePage, 'markdown')}>
                   <FileDown size={15} aria-hidden="true" /><span>导出 Markdown</span><small>.md</small>
                 </button>
                 <button type="button" onClick={() => void copyMarkdown()}>
                   {copied ? <Check size={15} aria-hidden="true" /> : <ClipboardCopy size={15} aria-hidden="true" />}
                   <span aria-live="polite">{copied ? '已复制 Markdown' : '复制为 Markdown'}</span>
                 </button>
-                <button type="button" onClick={() => { exportJSON(); setToolsOpen(false) }}>
+                <button type="button" onClick={() => void exportPage(activePage, 'json')}>
                   <Download size={15} aria-hidden="true" /><span>导出 JSON</span><small>.json</small>
                 </button>
               </div>
@@ -255,7 +308,8 @@ function Workspace({ workspace, anchor, saveFailed, change, reset }: ReturnType<
           onView={selectNavigation} onClose={() => setNavigationOpen(false)} onActivate={openPage} onCreate={newPage}
           onIcon={(id, icon) => editPage(id, { icon })} onAction={pageAction} />
         <PageEditor key={activePage.id} page={activePage} extensions={extensions} anchor={anchor} commentsOpen={commentsOpen}
-          onCommentsOpen={showComments} onEditorReady={editorReady} onEdit={editPage} onImport={file => void chooseMarkdownFile(file)} />
+          onCommentsOpen={showComments} onEditorReady={editorReady} onEdit={editPage} onStageContent={stageContent}
+          onImport={file => void chooseMarkdownFile(file)} />
       </div>
       {(notice || saveFailed) && <div className="workspace-notice" role="status">
         {notice || '浏览器无法保存工作区。'}
@@ -286,7 +340,43 @@ function Workspace({ workspace, anchor, saveFailed, change, reset }: ReturnType<
   )
 }
 
+function WorkspaceApp({ persistence, appearance }: { persistence?: WorkspacePersistence; appearance: Appearance }) {
+  const store = useWorkspace(schema, persistence)
+  return <Workspace key={store.revision} {...store} appearance={appearance} />
+}
+
+function DesktopWorkspaceApp({ bridge, appearance }: { bridge: DesktopBridge; appearance: Appearance }) {
+  const [storage, setStorage] = useState<WorkspacePersistence | null>(null)
+  const [failed, setFailed] = useState(false)
+  const [attempt, setAttempt] = useState(0)
+
+  useEffect(() => {
+    let mounted = true
+    void openDesktopWorkspaceStorage(bridge).then(
+      next => { if (mounted) setStorage(next) },
+      () => { if (mounted) setFailed(true) },
+    )
+    return () => { mounted = false }
+  }, [bridge, attempt])
+
+  if (storage) return <WorkspaceApp persistence={storage} appearance={appearance} />
+  if (!failed) return null
+  return <div className="workspace-notice" role="status">
+    无法读取桌面工作区。
+    <button type="button" onClick={() => { setFailed(false); setAttempt(attempt + 1) }}>重试</button>
+  </div>
+}
+
 export default function App() {
-  const store = useWorkspace(schema)
-  return <Workspace key={store.revision} {...store} />
+  const bridge = getDesktopBridge()
+  const [mode, setMode] = useState(() => readThemeMode(window))
+  useLayoutEffect(() => syncTheme(window, mode), [mode])
+  useEffect(() => bridge?.onMenuCommand(command => {
+    if (!command.startsWith('theme-')) return
+    const selection = command.slice('theme-'.length)
+    if (isThemeMode(selection)) setMode(selection)
+  }), [bridge])
+
+  const appearance = { mode, setMode }
+  return bridge ? <DesktopWorkspaceApp bridge={bridge} appearance={appearance} /> : <WorkspaceApp appearance={appearance} />
 }
