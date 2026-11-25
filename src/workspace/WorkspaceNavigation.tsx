@@ -6,7 +6,8 @@ import { createPortal } from 'react-dom'
 import { OutlineSidebar } from '../components/OutlineSidebar'
 import { useAnchoredPosition } from '../editor/components/editor-ui'
 import { findPage, pageAncestors, pagesByParent, pageTitle } from './page-store'
-import type { PageRecord, WorkspaceState } from './page-store'
+import type { WorkspaceState } from './page-store'
+import type { PageMetadata } from './workspace-format'
 
 export type NavigationView = 'pages' | 'outline'
 export type PageAction = 'rename' | 'duplicate' | 'move' | 'export' | 'delete'
@@ -26,7 +27,7 @@ const pageActions = [
 ] as const
 
 interface NavigationProps {
-  readonly workspace: WorkspaceState
+  readonly workspace: WorkspaceState<PageMetadata>
   readonly view: NavigationView
   readonly open: boolean
   readonly editor: Editor | null
@@ -46,7 +47,7 @@ interface OpenPopover {
 
 function PagePopover({ popover, page, id, onClose, onIcon, onAction }: {
   popover: OpenPopover
-  page: PageRecord
+  page: PageMetadata
   id: string
   onClose: () => void
   onIcon: NavigationProps['onIcon']
@@ -104,7 +105,7 @@ function PagePopover({ popover, page, id, onClose, onIcon, onAction }: {
   )
 }
 
-function matchingPages(workspace: WorkspaceState, query: string): Set<string> | null {
+function matchingPages(workspace: WorkspaceState<PageMetadata>, query: string): Set<string> | null {
   if (!query) return null
   const matches = new Set<string>()
   for (const page of workspace.pages) {

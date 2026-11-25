@@ -1,24 +1,21 @@
 import type { JSONContent } from '@tiptap/core'
 import type { Schema } from '@tiptap/pm/model'
-import type { CommentThread } from '../editor/comments'
 import { markdownToDoc } from '../editor/markdown/markdown-codec'
 import { importedTitle } from '../editor/markdown/markdown-files'
+import { checkedPageShard } from './workspace-format'
+import type { PageMetadata, PageShard } from './workspace-format'
 
-export interface PageRecord {
-  readonly id: string
-  readonly parentId: string | null
-  readonly title: string
-  readonly icon: string
+export interface PageRecord extends PageMetadata {
   readonly content: JSONContent
-  readonly comments: readonly CommentThread[]
-  readonly createdAt: number
-  readonly updatedAt: number
-  readonly order: number
 }
 
-export interface WorkspaceState {
+export interface WorkspacePage extends PageMetadata {
+  readonly content?: JSONContent
+}
+
+export interface WorkspaceState<P extends PageMetadata = PageRecord> {
   readonly activePageId: string
-  readonly pages: readonly PageRecord[]
+  readonly pages: readonly P[]
   readonly demoVersion?: number
 }
 
@@ -33,12 +30,12 @@ type NewPage = PageChanges & { parentId?: string | null }
 export const DEFAULT_PAGE_TITLE = '无标题文档'
 export const WORKSPACE_STORAGE_KEY = 'lark-block-editor.workspace.v1'
 
-export function pageTitle(page: PageRecord): string {
+export function pageTitle(page: PageMetadata): string {
   return page.title.trim() || DEFAULT_PAGE_TITLE
 }
 
-export function hasPageContent(page: PageRecord): boolean {
-  return page.comments.length > 0 || (page.content.content ?? []).some(node =>
+export function hasPageContent(page: WorkspacePage): boolean {
+  return !page.content || page.comments.length > 0 || (page.content.content ?? []).some(node =>
     node.type !== 'paragraph' || !!node.content?.length ||
     !!(node.attrs?.blockBg && node.attrs.blockBg !== 'default'),
   )
@@ -59,12 +56,12 @@ export function createWorkspace(identity: PageIdentity, initial: PageChanges = {
   return { activePageId: identity.id, pages: [makePage(identity, 0, initial)] }
 }
 
-export function findPage(workspace: WorkspaceState, id: string | null): PageRecord | undefined {
+export function findPage<P extends PageMetadata>(workspace: WorkspaceState<P>, id: string | null): P | undefined {
   return workspace.pages.find(page => page.id === id)
 }
 
-export function pagesByParent(workspace: WorkspaceState) {
-  const index = new Map<string | null, PageRecord[]>()
+export function pagesByParent<P extends PageMetadata>(workspace: WorkspaceState<P>) {
+  const index = new Map<string | null, P[]>()
   for (const page of workspace.pages) {
     const siblings = index.get(page.parentId)
     if (siblings) siblings.push(page)
@@ -74,8 +71,8 @@ export function pagesByParent(workspace: WorkspaceState) {
   return index
 }
 
-export function pageAncestors(workspace: WorkspaceState, id: string): PageRecord[] {
-  const ancestors: PageRecord[] = []
+export function pageAncestors<P extends PageMetadata>(workspace: WorkspaceState<P>, id: string): P[] {
+  const ancestors: P[] = []
   let parent = findPage(workspace, findPage(workspace, id)?.parentId ?? null)
   while (parent) {
     ancestors.push(parent)
@@ -84,7 +81,7 @@ export function pageAncestors(workspace: WorkspaceState, id: string): PageRecord
   return ancestors.reverse()
 }
 
-function collectTree(index: ReturnType<typeof pagesByParent>, roots: string[]): Set<string> {
+function collectTree(index: ReadonlyMap<string | null, readonly PageMetadata[]>, roots: string[]): Set<string> {
   const ids = new Set(roots)
   for (const id of ids) {
     for (const child of index.get(id) ?? []) ids.add(child.id)
@@ -92,11 +89,11 @@ function collectTree(index: ReturnType<typeof pagesByParent>, roots: string[]): 
   return ids
 }
 
-export function pageSubtree(workspace: WorkspaceState, id: string): Set<string> {
+export function pageSubtree(workspace: WorkspaceState<PageMetadata>, id: string): Set<string> {
   return collectTree(pagesByParent(workspace), [id])
 }
 
-function nextOrder(workspace: WorkspaceState, parentId: string | null): number {
+function nextOrder(workspace: WorkspaceState<PageMetadata>, parentId: string | null): number {
   let order = 0
   for (const page of workspace.pages) {
     if (page.parentId === parentId) order = Math.max(order, page.order + 1)
@@ -104,47 +101,50 @@ function nextOrder(workspace: WorkspaceState, parentId: string | null): number {
   return order
 }
 
-export function addPage(workspace: WorkspaceState, identity: PageIdentity, initial: NewPage = {}): WorkspaceState {
+export function addPage<P extends WorkspacePage>(workspace: WorkspaceState<P>, identity: PageIdentity, initial: NewPage = {}): WorkspaceState<P | PageRecord> {
   const parentId = initial.parentId ?? null
   if ((parentId !== null && !findPage(workspace, parentId)) || findPage(workspace, identity.id)) return workspace
   const page = makePage(identity, nextOrder(workspace, parentId), initial)
   return { ...workspace, activePageId: page.id, pages: [...workspace.pages, page] }
 }
 
-export function activatePage(workspace: WorkspaceState, id: string): WorkspaceState {
+export function activatePage<P extends PageMetadata>(workspace: WorkspaceState<P>, id: string): WorkspaceState<P> {
   return id !== workspace.activePageId && findPage(workspace, id) ? { ...workspace, activePageId: id } : workspace
 }
 
-export function updatePage(workspace: WorkspaceState, id: string, changes: PageChanges, now: number): WorkspaceState {
+export function updatePage<P extends WorkspacePage>(workspace: WorkspaceState<P>, id: string, changes: PageChanges, now: number): WorkspaceState<P> {
   const page = findPage(workspace, id)
   if (!page || (Object.keys(changes) as (keyof PageChanges)[]).every(key => page[key] === changes[key])) return workspace
   return replacePage(workspace, { ...page, ...changes, updatedAt: now })
 }
 
-function replacePage(workspace: WorkspaceState, replacement: PageRecord): WorkspaceState {
+function replacePage<P extends WorkspacePage>(workspace: WorkspaceState<P>, replacement: P): WorkspaceState<P> {
   return { ...workspace, pages: workspace.pages.map(page => page.id === replacement.id ? replacement : page) }
 }
 
-export function copyPage(workspace: WorkspaceState, id: string, identity: PageIdentity): WorkspaceState {
+export function copyPage<P extends WorkspacePage>(
+  workspace: WorkspaceState<P>, id: string, identity: PageIdentity, loadedContent?: JSONContent,
+): WorkspaceState<P | PageRecord> {
   const page = findPage(workspace, id)
-  if (!page) return workspace
+  const content = loadedContent ?? page?.content
+  if (!page || !content) return workspace
   return addPage(workspace, identity, {
     parentId: page.parentId,
     title: `${pageTitle(page)}（副本）`,
     icon: page.icon,
-    content: structuredClone(page.content),
+    content: structuredClone(content),
     comments: structuredClone(page.comments),
   })
 }
 
-export function movePage(workspace: WorkspaceState, id: string, parentId: string | null, now: number): WorkspaceState {
+export function movePage<P extends WorkspacePage>(workspace: WorkspaceState<P>, id: string, parentId: string | null, now: number): WorkspaceState<P> {
   const page = findPage(workspace, id)
   if (!page || page.parentId === parentId) return workspace
   if (parentId !== null && (!findPage(workspace, parentId) || pageSubtree(workspace, id).has(parentId))) return workspace
   return replacePage(workspace, { ...page, parentId, order: nextOrder(workspace, parentId), updatedAt: now })
 }
 
-export function removePage(workspace: WorkspaceState, id: string, fallback: PageIdentity): WorkspaceState {
+export function removePage<P extends WorkspacePage>(workspace: WorkspaceState<P>, id: string, fallback: PageIdentity): WorkspaceState<P | PageRecord> {
   const page = findPage(workspace, id)
   if (!page) return workspace
   const index = pagesByParent(workspace)
@@ -159,92 +159,17 @@ export function removePage(workspace: WorkspaceState, id: string, fallback: Page
   return { ...workspace, activePageId, pages }
 }
 
-export function importMarkdownPage(
-  workspace: WorkspaceState, schema: Schema, identity: PageIdentity, fileName: string, markdown: string,
-): WorkspaceState {
+export function importMarkdownPage<P extends WorkspacePage>(
+  workspace: WorkspaceState<P>, schema: Schema, identity: PageIdentity, fileName: string, markdown: string,
+): WorkspaceState<P | PageRecord> {
   return addPage(workspace, identity, {
     title: importedTitle(fileName, markdown),
     content: markdownToDoc(schema, markdown).toJSON(),
   })
 }
 
-function isObject(value: unknown): value is Record<string, unknown> {
-  return value !== null && typeof value === 'object' && !Array.isArray(value)
-}
-
-function isThread(value: unknown): value is CommentThread {
-  return isObject(value) && typeof value.id === 'string' && typeof value.quote === 'string' &&
-    typeof value.resolved === 'boolean' && Array.isArray(value.messages) && value.messages.every(message =>
-      isObject(message) && typeof message.id === 'string' && typeof message.author === 'string' && typeof message.text === 'string',
-    )
-}
-
-const uuidPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
-
-function isPage(value: unknown, schema: Schema): value is PageRecord {
-  if (!isObject(value) || typeof value.id !== 'string' || !uuidPattern.test(value.id) ||
-      (value.parentId !== null && typeof value.parentId !== 'string') ||
-      typeof value.title !== 'string' || typeof value.icon !== 'string' || !value.icon ||
-      !Number.isFinite(value.createdAt) || !Number.isFinite(value.updatedAt) ||
-      typeof value.order !== 'number' || !Number.isSafeInteger(value.order) || value.order < 0 ||
-      !Array.isArray(value.comments) || !value.comments.every(isThread) ||
-      !isObject(value.content) || value.content.type !== schema.topNodeType.name) return false
-  schema.nodeFromJSON(value.content).check()
-  return true
-}
-
-function decodeWorkspace(schema: Schema, raw: string): WorkspaceState | null {
-  const value: unknown = JSON.parse(raw)
-  if (!isObject(value) || typeof value.activePageId !== 'string' || !Array.isArray(value.pages) ||
-      !value.pages.length || !value.pages.every(page => isPage(page, schema))) return null
-
-  const workspace: WorkspaceState = {
-    activePageId: value.activePageId,
-    pages: value.pages,
-    ...(typeof value.demoVersion === 'number' && Number.isSafeInteger(value.demoVersion) && value.demoVersion > 0
-      ? { demoVersion: value.demoVersion } : {}),
-  }
-  const index = pagesByParent(workspace)
-  const reachable = collectTree(index, (index.get(null) ?? []).map(page => page.id))
-  return reachable.size === workspace.pages.length && reachable.has(workspace.activePageId) ? workspace : null
-}
-
-export function restoreWorkspace(raw: string | null, schema: Schema, fallback: () => WorkspaceState): WorkspaceState {
-  if (raw) {
-    try {
-      const stored = decodeWorkspace(schema, raw)
-      if (stored) return stored
-    } catch {
-      // A file or browser record can contain invalid JSON or an unsupported document.
-    }
-  }
-  return fallback()
-}
-
-export function loadWorkspace(storage: Storage | null, schema: Schema, fallback: () => WorkspaceState): WorkspaceState {
-  let raw: string | null = null
-  try { raw = storage?.getItem(WORKSPACE_STORAGE_KEY) ?? null } catch { /* Browser storage is unavailable. */ }
-  return restoreWorkspace(raw, schema, fallback)
-}
-
-export function saveWorkspace(storage: Storage | null, workspace: WorkspaceState): boolean {
-  if (!storage) return false
-  try {
-    storage.setItem(WORKSPACE_STORAGE_KEY, JSON.stringify(workspace))
-    return true
-  } catch {
-    return false
-  }
-}
-
-export function clearWorkspace(storage: Storage | null): boolean {
-  if (!storage) return false
-  try {
-    storage.removeItem(WORKSPACE_STORAGE_KEY)
-    return true
-  } catch {
-    return false
-  }
+export function checkedPageContent(schema: Schema, shard: unknown, id: string): PageShard {
+  return checkedPageShard(schema, shard, id)
 }
 
 export function parsePageHash(hash: string) {

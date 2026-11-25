@@ -1,4 +1,4 @@
-import { act, render, screen, waitFor, within } from '@testing-library/react'
+import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import App from './App'
@@ -189,6 +189,49 @@ describe('App 多页面集成', () => {
     expect(screen.getByText('5 个页面')).toBeInTheDocument()
     expect(screen.getByRole('button', { name: '全图种与公式复杂示例' })).toBeInTheDocument()
     await waitFor(() => expect(screen.getByRole('textbox', { name: '文档标题' })).toHaveValue('文档协作与发布手册'))
+  })
+
+  it('从未打开的页面可以导出 Markdown 和创建完整副本', async () => {
+    const demo = createDemoWorkspace(schema)
+    localStorage.setItem(WORKSPACE_STORAGE_KEY, JSON.stringify(demo))
+    const user = await mountApp()
+    const name = '试点验收清单'
+    const menu = () => screen.getByRole('group', { name: `${name}的操作` })
+    async function openPageActions() {
+      await user.click(screen.getByRole('button', { name: `「${name}」的更多操作` }))
+    }
+    await openPageActions()
+    await user.click(within(menu()).getByRole('button', { name: '导出 Markdown' }))
+    await waitFor(() => expect(URL.createObjectURL).toHaveBeenCalledWith(expect.any(Blob)))
+    expect(screen.getByRole('textbox', { name: '文档标题' })).toHaveValue('文档协作与发布手册')
+    await openPageActions()
+    await user.click(within(menu()).getByRole('button', { name: '创建副本' }))
+    expect(await screen.findByRole('button', { name: `${name}（副本）` })).toHaveAttribute('aria-current', 'page')
+    const editor = screen.getByRole('textbox', { name: '文档正文' })
+    expect(editor.querySelector('[data-type="taskList"]')).not.toBeNull()
+    expect(screen.getByRole('complementary', { name: '评论' })).toHaveTextContent('设计团队已核对')
+    expect(screen.getByRole('button', { name })).not.toHaveAttribute('aria-current')
+  })
+
+  it('copies Markdown and duplicates the active document from its live, unflushed body', async () => {
+    await mountApp()
+    const body = screen.getByRole('textbox', { name: '文档正文' }) as HTMLElement & {
+      editor: import('@tiptap/core').Editor
+    }
+    await waitFor(() => expect(body.editor.isInitialized).toBe(true))
+    const writeText = vi.fn().mockResolvedValue(undefined)
+    Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { writeText } })
+    vi.useFakeTimers()
+    act(() => body.editor.commands.setContent('<p>正在编辑、尚未刷盘的正文</p>'))
+    fireEvent.click(screen.getByRole('button', { name: '导入与导出' }))
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: '复制为 Markdown' }))
+    })
+    expect(writeText).toHaveBeenCalledExactlyOnceWith(expect.stringContaining('正在编辑、尚未刷盘的正文'))
+    fireEvent.click(screen.getByRole('button', { name: '「文档协作与发布手册」的更多操作' }))
+    await act(async () => { fireEvent.click(screen.getByRole('button', { name: '创建副本' })) })
+    expect(screen.getByRole('textbox', { name: '文档标题' })).toHaveValue('文档协作与发布手册（副本）')
+    expect(screen.getByRole('textbox', { name: '文档正文' })).toHaveTextContent('正在编辑、尚未刷盘的正文')
   })
 
   it('invariants: contenteditable 内没有原生交互控件，浮层是 ProseMirror 兄弟', async () => {

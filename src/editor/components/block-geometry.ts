@@ -85,19 +85,74 @@ export function firstLineCenter(element: HTMLElement): number {
   return rect.top + rect.height / 2
 }
 
+const searchIndexes = new WeakMap<readonly MeasuredBlock[], {
+  entries: { block: MeasuredBlock; order: number }[]
+  maxBottom: number[]
+}>()
+
 export function hitBlock(blocks: readonly MeasuredBlock[], point: Point, rowGap = 0): MeasuredBlock | null {
+  let index = searchIndexes.get(blocks)
+  if (!index) {
+    const entries = blocks.map((block, order) => ({ block, order }))
+      .sort((a, b) => a.block.rect.top - b.block.rect.top)
+    const maxBottom: number[] = []
+    for (const [i, { block }] of entries.entries()) maxBottom.push(Math.max(maxBottom[i - 1] ?? -Infinity, block.rect.bottom))
+    searchIndexes.set(blocks, index = { entries, maxBottom })
+  }
+  let low = 0
+  let high = index.entries.length
+  while (low < high) {
+    const middle = (low + high) >>> 1
+    if (index.entries[middle]!.block.rect.top <= point.y + rowGap) low = middle + 1
+    else high = middle
+  }
   let closest: MeasuredBlock | null = null
+  let order = -1
   let distance = rowGap
-  for (const block of blocks) {
-    const { rect } = block
+  for (let i = low - 1; i >= 0 && index.maxBottom[i]! >= point.y - distance; i--) {
+    const entry = index.entries[i]!
+    const { rect } = entry.block
     if (point.x < rect.left || point.x > rect.right) continue
     const vertical = Math.max(0, rect.top - point.y, point.y - rect.bottom)
-    if (vertical <= distance) {
-      closest = block
+    if (vertical < distance || vertical === distance && entry.order > order) {
+      closest = entry.block
       distance = vertical
+      order = entry.order
     }
   }
   return closest
+}
+
+export function blockPositionAtElement(view: EditorView, element: HTMLElement): number | null {
+  if (!view.dom.contains(element)) return null
+  const position = view.posAtDOM(element, 0)
+  if (position < 0 || position > view.state.doc.content.size) return null
+  if (view.nodeDOM(position) === element) return position
+  const $pos = view.state.doc.resolve(position)
+  for (let depth = $pos.depth; depth > 0; depth--) {
+    const pos = $pos.before(depth)
+    if (view.nodeDOM(pos) === element) return pos
+  }
+  return null
+}
+
+export function blockAtPoint(view: EditorView, point: Point, gap = 0): MeasuredBlock | null {
+  const root = view.dom
+  const owner = root.ownerDocument
+  if (!owner.elementFromPoint) return hitBlock(measureBlocks(view), point, gap)
+  for (const delta of gap ? [0, -gap, gap] : [0]) {
+    let element = owner.elementFromPoint(point.x, point.y + delta)
+    while (element && element !== root && root.contains(element)) {
+      if (element instanceof HTMLElement && (element.parentElement === root || element.parentElement?.matches('[data-column]'))) {
+        const pos = blockPositionAtElement(view, element)
+        const hit = pos === null ? null : measureBlock(view, pos)
+        if (hit && hit.rect.top - gap <= point.y && hit.rect.bottom + gap >= point.y &&
+            hit.rect.left <= point.x && hit.rect.right >= point.x) return hit
+      }
+      element = element.parentElement
+    }
+  }
+  return null
 }
 
 export function marqueeRect(from: Point, to: Point): Rect {

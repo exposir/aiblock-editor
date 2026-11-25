@@ -1,3 +1,4 @@
+import { observeViewport } from '../components/viewport'
 import { renderMath } from './math'
 import { renderMermaid } from './mermaid'
 
@@ -8,36 +9,6 @@ export function isDark(owner: Document): boolean {
 }
 
 const themeWatchers = new WeakMap<Document, { observer: MutationObserver; listeners: Set<() => void> }>()
-const previewWatchers = new WeakMap<Document, { observer: IntersectionObserver; listeners: Map<Element, (near: boolean) => void> }>()
-
-function watchPreview(panel: HTMLElement, update: (near: boolean) => void) {
-  const owner = panel.ownerDocument
-  let watcher = previewWatchers.get(owner)
-  if (!watcher) {
-    const Observer = owner.defaultView?.IntersectionObserver
-    if (!Observer) {
-      update(true)
-      return () => {}
-    }
-    const listeners = new Map<Element, (near: boolean) => void>()
-    const observer = new Observer(entries => {
-      for (const entry of entries) listeners.get(entry.target)?.(entry.isIntersecting)
-    }, { rootMargin: '300px 0px' })
-    watcher = { observer, listeners }
-    previewWatchers.set(owner, watcher)
-  }
-  watcher.listeners.set(panel, update)
-  watcher.observer.observe(panel)
-  return () => {
-    watcher.observer.unobserve(panel)
-    watcher.listeners.delete(panel)
-    if (!watcher.listeners.size) {
-      watcher.observer.disconnect()
-      previewWatchers.delete(owner)
-    }
-  }
-}
-
 function subscribeTheme(owner: Document, listener: () => void): () => void {
   let watcher = themeWatchers.get(owner)
   if (!watcher) {
@@ -137,7 +108,7 @@ export function attachCodePreview(panel: HTMLElement) {
             dirty = true
             if (near) void draw()
           })
-          stopPreview = watchPreview(panel, visible => {
+          stopPreview = observeViewport(panel, 300, visible => {
             if (visible === near) return
             near = visible
             if (!near) cancel()

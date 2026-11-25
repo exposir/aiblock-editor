@@ -5,3 +5,4 @@ coverage/
 .DS_Store
 dist-electron/
 release/
+dist-cli/

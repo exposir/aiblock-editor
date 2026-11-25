@@ -1,5 +1,6 @@
+import { mockViewport } from '../../test/viewport-fixture'
 import { Editor, getSchema } from '@tiptap/core'
-import { act, fireEvent, render, screen } from '@testing-library/react'
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { describe, expect, it, onTestFinished, vi } from 'vitest'
 import { InlineMathOverlay } from '../components/InlineMathOverlay'
 import { docToMarkdown, markdownToDoc, markdownToSlice } from '../markdown/markdown-codec'
@@ -135,5 +136,26 @@ describe('LaTeX in the editor', () => {
     fireEvent.keyDown(reopened, { key: 'Escape' })
     expect(instance.state.doc.firstChild?.lastChild?.attrs.latex).toBe('x^2')
     expect(screen.queryByRole('dialog', { name: '编辑数学公式' })).not.toBeInTheDocument()
+  })
+})
+
+describe('inline math viewport rendering', () => {
+  // @partition proximity: retain readable text until the observer admits a formula
+  it('renders a formula only after its placeholder enters the viewport buffer', async () => {
+    const viewport = mockViewport()
+    const editor = new Editor({
+      extensions: createEditorExtensions(),
+      content: { type: 'doc', content: [{ type: 'paragraph', content: [{ type: 'inlineMath', attrs: { latex: 'x^2' } }] }] },
+    })
+    try {
+      const formula = editor.view.dom.querySelector('[data-inline-math]')!
+      expect(formula).toHaveTextContent('x^2')
+      expect(formula.querySelector('.katex')).toBeNull()
+      viewport.show(formula, true, 300)
+      await waitFor(() => expect(formula.querySelector('.katex')).not.toBeNull())
+    } finally {
+      editor.destroy()
+      vi.unstubAllGlobals()
+    }
   })
 })

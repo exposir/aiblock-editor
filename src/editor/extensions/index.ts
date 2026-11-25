@@ -1,6 +1,5 @@
 import type { Extensions } from '@tiptap/core'
 import StarterKit from '@tiptap/starter-kit'
-import InlineCode from '@tiptap/extension-code'
 import Placeholder from '@tiptap/extension-placeholder'
 import TaskList from '@tiptap/extension-task-list'
 import Highlight from '@tiptap/extension-highlight'
@@ -22,8 +21,8 @@ import { PortalTaskItem } from '../views/task-item-view'
 import { MarkdownPaste } from '../markdown/markdown-paste'
 import { MarkdownInputRules } from './markdown-input-rules'
 import { InlineMath } from './inline-math'
-
-const CommentableInlineCode = InlineCode.extend({ excludes: 'code bold italic strike underline link textStyle highlight' })
+import { ImageBlock } from './image-block'
+import { CommentableInlineCode } from '../schema/inline-code'
 
 export { BlockIdExtension, extractOutline } from './block-id'
 export { BlockDragExtension, allowsColumnDrop, createBlockMoveTransaction, getBlockDropSide } from './block-drag'
@@ -65,6 +64,7 @@ export function createEditorExtensions(): Extensions {
     Column,
     CodeBlock,
     InlineMath,
+    ImageBlock,
     CommentMark,
     SlashCommand,
     MultiBlockSelectionExtension,

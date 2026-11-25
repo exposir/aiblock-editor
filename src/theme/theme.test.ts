@@ -117,7 +117,7 @@ describe('theme preference', () => {
     onTestFinished(() => scroll.mockRestore())
     const user = userEvent.setup()
     const view = render(createElement(App))
-    const editor = screen.getByRole('textbox', { name: '文档正文' })
+    const editor = await screen.findByRole('textbox', { name: '文档正文' })
     const control = screen.getByRole('button', { name: '外观：跟随系统，切换为浅色' })
     control.focus()
     await user.keyboard('{Enter}')

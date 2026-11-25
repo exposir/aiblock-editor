@@ -1,13 +1,18 @@
-import { app, BrowserWindow, dialog, ipcMain, Menu, nativeTheme, screen, shell } from 'electron'
+import { app, BrowserWindow, dialog, ipcMain, Menu, nativeTheme, protocol, screen, shell } from 'electron'
 import type { IpcMainEvent, IpcMainInvokeEvent, MenuItemConstructorOptions } from 'electron'
+import { randomUUID } from 'node:crypto'
 import { join } from 'node:path'
 import { pathToFileURL } from 'node:url'
 import { desktopChannels as channels, suggestedFileName } from '../src/desktop/bridge.js'
+import type { WorkspaceCloseResult, WorkspaceCommitOptions, WorkspaceExternalChange } from '../src/workspace/workspace-format.js'
 import type { DesktopMenuCommand } from '../src/desktop/bridge.js'
 import { isThemeMode, parseThemeMode, themeBackgrounds, themeLabels, themeModes } from '../src/theme/theme.js'
 import type { ThemeMode } from '../src/theme/theme.js'
 import { decideNavigation, developmentUrl, externalUrl, isAppDocument } from './security.js'
-import { createWorkspaceFile, isSaveFileOptions, readMarkdownFile, readOptionalText, writeAtomicText } from './storage.js'
+import { createImageAssetFiles, createWorkspaceFiles, isSaveFileOptions, readMarkdownFile, readOptionalText, writeAtomicText } from './storage.js'
+import { WorkspaceConflictError, WorkspaceLockedError } from '../src/workspace/workspace-files.js'
+import { watchWorkspace } from './workspace-watcher.js'
+import type { WorkspaceWatcher } from './workspace-watcher.js'
 import { minimumWindowSize, parseWindowState, restoreWindowState } from './window-state.js'
 
 const isMac = process.platform === 'darwin'
@@ -25,6 +30,7 @@ const appUrl = rendererUrl()
 let mainWindow: BrowserWindow | null = null
 let openingWindow = false
 let quitting = false
+let workspaceWatcher: WorkspaceWatcher | undefined
 
 function reportError(error: unknown) {
   console.error(error)
@@ -169,13 +175,27 @@ function trustedHandler(channel: string, handle: (window: BrowserWindow, value: 
   })
 }
 
-function installFileHandlers(workspace: ReturnType<typeof createWorkspaceFile>) {
-  trustedHandler(channels.loadWorkspace, () => workspace.load())
-  trustedHandler(channels.saveWorkspace, (_window, raw) => {
-    if (typeof raw !== 'string') throw new TypeError('Expected serialized workspace')
-    return workspace.save(raw)
+function installFileHandlers(
+  workspace: ReturnType<typeof createWorkspaceFiles>,
+  assets: ReturnType<typeof createImageAssetFiles>,
+) {
+  trustedHandler(channels.readIndex, () => workspace.readIndex())
+  trustedHandler(channels.readPage, (_window, id) => workspace.readPage(id))
+  trustedHandler(channels.commit, async (_window, payload) => {
+    const envelope = payload && typeof payload === 'object' && 'changes' in payload
+      ? payload as { changes: unknown; options?: WorkspaceCommitOptions }
+      : { changes: payload }
+    try {
+      await workspace.commit(envelope.changes, envelope.options)
+      return { conflict: false }
+    } catch (error) {
+      if (error instanceof WorkspaceConflictError) return { conflict: true, files: error.files }
+      if (error instanceof WorkspaceLockedError) return { conflict: true, files: [], locked: true }
+      throw error
+    }
   })
-  trustedHandler(channels.clearWorkspace, () => workspace.clear())
+  trustedHandler(channels.saveImageAsset, (_window, input) => assets.save(input))
+  trustedHandler(channels.readImageAssets, (_window, ids) => assets.readMetadata(ids))
   trustedHandler(channels.openMarkdownFile, async window => {
     const { canceled, filePaths } = await dialog.showOpenDialog(window, {
       properties: ['openFile'],
@@ -199,28 +219,31 @@ function installFileHandlers(workspace: ReturnType<typeof createWorkspaceFile>) 
   })
 }
 
-function flushRenderer(window: BrowserWindow): Promise<void> {
+function flushRenderer(window: BrowserWindow): Promise<WorkspaceCloseResult> {
   const contents = window.webContents
-  if (contents.isCrashed() || !isAppDocument(contents.getURL(), appUrl)) return Promise.resolve()
+  if (contents.isCrashed() || !isAppDocument(contents.getURL(), appUrl)) return Promise.resolve('saved')
+  const requestId = randomUUID()
   return new Promise(resolve => {
-    function finish() {
+    function finish(saved: WorkspaceCloseResult) {
       clearTimeout(timeout)
       ipcMain.off(channels.workspaceFlushed, acknowledge)
-      resolve()
+      resolve(saved)
     }
-    function acknowledge(event: IpcMainEvent) {
-      if (isTrustedSender(event)) finish()
+    function acknowledge(event: IpcMainEvent, id: unknown, saved: unknown) {
+      if (id === requestId && isTrustedSender(event)) {
+        finish(saved === 'saved' || saved === 'images-pending' ? saved : 'workspace-failed')
+      }
     }
-    const timeout = setTimeout(finish, 2000)
+    const timeout = setTimeout(() => finish('workspace-failed'), 10_000)
     ipcMain.on(channels.workspaceFlushed, acknowledge)
-    try { contents.send(channels.flushWorkspace) } catch { finish() }
+    try { contents.send(channels.flushWorkspace, requestId) } catch { finish('workspace-failed') }
   })
 }
 
 async function createWindow(
   statePath: string,
-  workspace: ReturnType<typeof createWorkspaceFile>,
   theme: ReturnType<typeof installTheme>,
+  watcher: WorkspaceWatcher,
 ) {
   if (openingWindow || mainWindow) return
   openingWindow = true
@@ -245,6 +268,8 @@ async function createWindow(
     })
     mainWindow = window
     installNavigationPolicy(window)
+    window.on('focus', () => watcher.refresh())
+    window.webContents.on('did-finish-load', () => watcher.refresh())
     window.once('ready-to-show', () => {
       if (saved.maximized) window.maximize()
       window.show()
@@ -259,16 +284,41 @@ async function createWindow(
       closing = true
       const state = { bounds: window.getNormalBounds(), maximized: window.isMaximized() }
       void Promise.allSettled([
-        flushRenderer(window).then(() => workspace.drain()),
+        flushRenderer(window),
         writeAtomicText(statePath, JSON.stringify(state)),
         theme.drain(),
-      ]).then(results => {
+      ]).then(async results => {
         for (const result of results) {
           if (result.status === 'rejected') reportError(result.reason)
+        }
+        const result = results[0]
+        const saved = result?.status === 'fulfilled' ? result.value : 'workspace-failed'
+        if (saved !== 'saved') {
+          const images = saved === 'images-pending'
+          const { response } = await dialog.showMessageBox(window, {
+            type: 'warning',
+            title: '关闭工作区',
+            message: images ? '部分图片尚未保存' : '工作区尚未确认保存',
+            detail: images
+              ? '正文和页面已保存。返回工作区可等待或重试图片保存。现在关闭可能丢失这些图片。'
+              : '返回工作区可继续保存。现在关闭可能丢失未写入的修改。',
+            buttons: ['返回工作区', '仍要关闭'],
+            defaultId: 0,
+            cancelId: 0,
+          })
+          if (response !== 1) {
+            closing = false
+            quitting = false
+            return
+          }
         }
         closeAllowed = true
         if (quitting) app.quit()
         else window.close()
+      }).catch(error => {
+        closing = false
+        quitting = false
+        reportError(error)
       })
     })
     window.on('closed', () => { mainWindow = null })
@@ -278,21 +328,31 @@ async function createWindow(
   }
 }
 
+protocol.registerSchemesAsPrivileged([{ scheme: 'lark-asset', privileges: { standard: true, secure: true, supportFetchAPI: true, corsEnabled: true } }])
+
 if (app.requestSingleInstanceLock()) {
-  app.on('before-quit', () => { quitting = true })
+  app.on('before-quit', () => { quitting = true; workspaceWatcher?.close() })
   process.on('SIGINT', () => app.quit())
   process.on('SIGTERM', () => app.quit())
   if (appUrl !== productionPage) process.stdin.once('end', () => app.quit()).resume()
   app.on('window-all-closed', () => { if (!isMac) app.quit() })
   void app.whenReady().then(async () => {
     const directory = app.getPath('userData')
-    const workspace = createWorkspaceFile(join(directory, 'workspace.json'))
+    const workspace = createWorkspaceFiles(directory)
+    const watcher = watchWorkspace(workspace, (change: WorkspaceExternalChange) => {
+      const window = mainWindow
+      if (!window || window.webContents.isDestroyed() || !isAppDocument(window.webContents.getURL(), appUrl)) return
+      window.webContents.send(channels.externalChange, change)
+    })
+    workspaceWatcher = watcher
+    const assets = createImageAssetFiles(directory)
+    protocol.handle('lark-asset', request => assets.respond(request, appUrl))
     const statePath = join(directory, 'window-state.json')
     const themePath = join(directory, 'theme')
     nativeTheme.themeSource = parseThemeMode(await readOptionalText(themePath).catch(() => null))
     const theme = installTheme(themePath)
-    const showWindow = () => createWindow(statePath, workspace, theme)
-    installFileHandlers(workspace)
+    const showWindow = () => createWindow(statePath, theme, watcher)
+    installFileHandlers(workspace, assets)
     installMenu(theme.setTheme)
     app.on('activate', () => { void showWindow().catch(reportError) })
     app.on('second-instance', () => {

@@ -17,6 +17,7 @@ function markdownCandidate(text: string): boolean {
     } catch { /* not JSON */ }
   }
   if (/^(?:https?|mailto|tel):\S+$/i.test(trimmed)) return false
+  if (/!\[[^\]\n]*\]\(\S|^\s*<img\s/i.test(text)) return true
   if (hasMathMarkup(text)) return true
   if (/^(?:```|~~~|>|#{1,6}\s|[-*+]\s|\s*\d+\.\s+\S|\|[^\n]*\||<details|::::columns|\[!\w+\]|==[^=\n]+==|`[^`\n]+`)/im.test(text)) return true
   if (/^\s*[-*+]\s+\[[ xX]\]\s+/m.test(text)) return true
@@ -71,7 +72,7 @@ function isPlainTextHtml(html: string, text: string): boolean {
 }
 
 function hasRichHtml(html: string): boolean {
-  return /<(?:strong|b|em|i|span|a|ul|ol|li|table|thead|tbody|tr|td|th|h[1-6]|blockquote|details|summary|pre|code)\b/i.test(html)
+  return /<(?:img|strong|b|em|i|span|a|ul|ol|li|table|thead|tbody|tr|td|th|h[1-6]|blockquote|details|summary|pre|code)\b/i.test(html)
 }
 
 function insertMarkdown(state: EditorState, text: string): Transaction | null {

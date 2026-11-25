@@ -5,6 +5,8 @@ import type { Token, Tokens, TokensList } from 'marked'
 import { codeLanguage, isPreviewLanguage } from '../extensions/code-languages'
 import { normalizeColumnWidths } from '../extensions/column-widths'
 import { blockMathAt, findInlineMath, inlineMathAt, inlineMathMarkdown } from '../preview/math-markup'
+import { imageAttributes, imageDestination, readImageElement } from '../extensions/image-attributes'
+import type { ImageAttributes } from '../extensions/image-attributes'
 import { calloutTheme } from '../types'
 
 const markdownParser = new Marked({
@@ -174,12 +176,26 @@ function inlineContent(node: ProseMirrorNode, mode: 'normal' | 'table' = 'normal
   return parts.join('')
 }
 
+function imageMarkdown(node: ProseMirrorNode) {
+  const attrs = imageAttributes(node.attrs)
+  const destination = imageDestination(attrs)
+  if (!destination) return escapeMarkdownPunctuation(attrs.alt)
+  if (attrs.width === 640 && attrs.height === 360 && attrs.displayWidth === null && attrs.align === 'center' && !/[\r\n]/.test(attrs.alt) && !(attrs.assetId && attrs.src)) {
+    return `![${escapeMarkdownPunctuation(attrs.alt)}](${escapeLinkDestination(destination)})`
+  }
+  const htmlAttr = (value: string) => escapeHtml(value).replace(/"/g, '&quot;').replace(/\r/g, '&#13;').replace(/\n/g, '&#10;')
+  return `<img src="${htmlAttr(destination)}" alt="${htmlAttr(attrs.alt)}" width="${attrs.width}" height="${attrs.height}"` +
+    (attrs.displayWidth === null ? '' : ` data-display-width="${attrs.displayWidth}"`) +
+    (attrs.assetId && attrs.src ? ` data-fallback-src="${htmlAttr(attrs.src)}"` : '') + ` data-align="${attrs.align}">`
+}
+
 function blockToMarkdown(node: ProseMirrorNode): string {
   switch (node.type.name) {
     case 'heading': {
       const level = Math.min(6, Math.max(1, Number(node.attrs.level) || 1))
       return `${'#'.repeat(level)} ${inlineContent(node)}`
     }
+    case 'imageBlock': return imageMarkdown(node)
     case 'paragraph': return inlineContent(node)
     case 'blockquote': return prefixLines(childrenToMarkdown(node), '> ')
     case 'codeBlock': {
@@ -508,6 +524,7 @@ function parseInlineMarks(schema: Schema, tokens: readonly Token[], inherited: P
         const type = schema.nodes.inlineMath
         return type ? [type.create({ latex }, undefined, inherited)] : [schema.text(token.raw, inherited)]
       }
+      case 'image': return token.text ? [schema.text(decodeHtmlEntities(token.text), inherited)] : []
       case 'codespan': return [schema.text(token.text, [schema.marks.code!.create()])]
       case 'link': {
         const mark = linkMark(schema, token.href)
@@ -565,29 +582,55 @@ function parseTable(schema: Schema, token: Tokens.Table): ProseMirrorNode | null
   return schema.nodes.table!.create(null, Fragment.fromArray(rows))
 }
 
+function htmlImage(raw: string): ImageAttributes | false {
+  if (!/^<img\b/i.test(raw.trimStart()) || typeof document === 'undefined') return false
+  const template = document.createElement('template')
+  template.innerHTML = raw.trim()
+  const image = template.content.firstElementChild
+  return image?.tagName === 'IMG' ? readImageElement(image as HTMLElement) : false
+}
+
+function paragraphBlocks(schema: Schema, token: Tokens.Paragraph) {
+  const type = schema.nodes.imageBlock
+  if (!type || !token.tokens?.some(part => part.type === 'image' || part.type === 'html' && /^<img\b/i.test(part.raw))) {
+    return [paragraphFromInline(schema, token.text)]
+  }
+  const blocks: ProseMirrorNode[] = []
+  let text = ''
+  function flush() {
+    if (text.trim()) blocks.push(paragraphFromInline(schema, text.trim()))
+    text = ''
+  }
+  for (const part of token.tokens) {
+    const attrs = part.type === 'image' && typeof part.href === 'string'
+      ? imageAttributes({ src: decodeHtmlEntities(part.href), alt: decodeHtmlEntities(part.text ?? '') })
+      : part.type === 'html' ? htmlImage(part.raw) : false
+    if (attrs && imageDestination(attrs)) {
+      flush()
+      blocks.push(type.create(attrs))
+    } else text += part.raw
+  }
+  flush()
+  return blocks
+}
+
 function tokenToBlocks(schema: Schema, tokens: readonly Token[], ctx: MarkdownContext): ProseMirrorNode[] {
   const blocks: ProseMirrorNode[] = []
   for (const token of tokens) {
     if (token.type === 'space' || token.type === 'def') continue
-    if (token.type === 'text') {
-      const custom = ctx.blocks.get(token.raw.trim())
-      if (custom) {
-        blocks.push(customBlockNode(schema, custom, ctx))
-        continue
-      }
-    }
     switch (token.type) {
       case 'heading':
         blocks.push(headingFromInline(schema, token.text, token.depth))
         break
       case 'paragraph':
+      case 'text':
         if ((() => {
           const custom = ctx.blocks.get(token.text.trim())
           if (!custom) return false
           blocks.push(customBlockNode(schema, custom, ctx))
           return true
         })()) break
-        blocks.push(paragraphFromInline(schema, token.text))
+        blocks.push(...paragraphBlocks(schema, token as Tokens.Paragraph))
         break
       case 'hr':
         blocks.push(schema.nodes.horizontalRule!.create())
@@ -620,7 +663,10 @@ function tokenToBlocks(schema: Schema, tokens: readonly Token[], ctx: MarkdownCo
       case 'html': {
         const custom = ctx.blocks.get(token.raw.trim())
         if (custom) blocks.push(customBlockNode(schema, custom, ctx))
-        else if (token.raw.trim()) {
+        else if (schema.nodes.imageBlock && htmlImage(token.raw)) {
+          const attrs = htmlImage(token.raw)
+          if (attrs) blocks.push(schema.nodes.imageBlock.create(attrs))
+        } else if (token.raw.trim()) {
           const text = token.raw.replace(/<[^>]+>/g, '').trim()
           if (text) blocks.push(paragraphFromInline(schema, text))
         }

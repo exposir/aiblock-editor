@@ -13,6 +13,9 @@ import { isDark } from '../preview/code-preview'
 import { diagramTemplates, renderMermaid } from '../preview/mermaid'
 import { positionOfBlockId } from './block-geometry'
 import { useEditorSelector, useOverlayRect } from './editor-ui'
+import type { OverlayRect } from './overlay-geometry'
+import { nearbyOverlayRect } from './overlay-layout'
+import { observeViewport } from './viewport'
 
 const names: Record<CodeLanguage, string> = {
   plaintext: '纯文本', typescript: 'TypeScript', javascript: 'JavaScript', python: 'Python',
@@ -24,12 +27,14 @@ const views: readonly [CodeViewMode, string][] = [
   ['preview', '预览'], ['split', '分栏'], ['code', '源码'],
 ]
 
-function CodeControls({ editor, host, node, pos, anchor }: {
+function CodeControls({ editor, host, node, pos, anchor, onFocus, initial }: {
   editor: Editor
   host: HTMLElement
   node: ProseMirrorNode
   pos: number
   anchor: HTMLElement | null
+  onFocus: (anchor: HTMLElement | null) => void
+  initial?: OverlayRect
 }) {
   const [exportError, setExportError] = useState('')
   const language = codeLanguage(node.attrs.language)
@@ -39,7 +44,7 @@ function CodeControls({ editor, host, node, pos, anchor }: {
   const copyRequest = useRef(0)
   const feedbackTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined)
   const text = node.textContent
-  const rect = useOverlayRect(anchor, host, editor.view.dom)
+  const rect = useOverlayRect(anchor, host, editor.view.dom, initial)
   const wrap = node.attrs.wrap === true
   const visible = rect && rect.width > 0 && rect.height > 0 && !anchor?.closest('[inert]')
 
@@ -130,7 +135,9 @@ function CodeControls({ editor, host, node, pos, anchor }: {
 
   const copyLabel = previewLanguage ? '复制源码' : '复制代码'
   return (
-    <div className="code-control-strip" data-preview-tools={previewLanguage || undefined} data-editor-overlay="" role="group" aria-label="代码块工具"
+    <div onFocus={() => onFocus(anchor)} onBlur={event => {
+      if (!(event.relatedTarget instanceof Node) || !event.currentTarget.contains(event.relatedTarget)) onFocus(null)
+    }} className="code-control-strip" data-code-anchor={node.attrs.blockId} data-preview-tools={previewLanguage || undefined} data-editor-overlay="" role="group" aria-label="代码块工具"
       style={rect ? { left: rect.left + 1, top: rect.top + 1, width: Math.max(0, rect.width - 2),
         visibility: visible ? 'visible' : 'hidden' } : undefined}>
       <select aria-label="代码语言" value={language}
@@ -193,6 +200,53 @@ function sameControls(a: Control[], b: Control[]) {
 export function CodeBlockOverlay({ editor, host }: { editor: Editor; host: HTMLElement }) {
   const selectControls = useMemo(createCodeControlsSelector, [editor])
   const blocks = useEditorSelector(editor, selectControls, sameControls)
-  return createPortal(blocks.map(({ node, pos, anchor }) =>
-    <CodeControls key={node.attrs.blockId ?? pos} node={node} pos={pos} anchor={anchor} host={host} editor={editor} />), host)
+  const [focused, setFocused] = useState<HTMLElement | null>(null)
+  const [visible, setVisible] = useState<ReadonlyMap<HTMLElement, OverlayRect | undefined>>(new Map())
+  const observers = useRef(new Map<HTMLElement, () => void>())
+  const selected = useEditorSelector(editor, current => {
+    if (!current) return null
+    const { selection } = current.state
+    const { $head } = selection
+    for (let depth = $head.depth; depth > 0; depth--) {
+      if ($head.node(depth).type.name === 'codeBlock') return current.view.nodeDOM($head.before(depth))
+    }
+    return selection.$from.nodeAfter?.type.name === 'codeBlock' ? current.view.nodeDOM(selection.from) : null
+  })
+
+  useLayoutEffect(() => {
+    const anchors = new Set(blocks.flatMap(({ anchor }) => anchor ? [anchor] : []))
+    for (const [element, stop] of observers.current) {
+      if (anchors.has(element)) continue
+      stop()
+      observers.current.delete(element)
+    }
+    setVisible(previous => {
+      const next = [...previous].filter(([element]) => anchors.has(element))
+      return next.length === previous.size ? previous : new Map(next)
+    })
+    for (const element of anchors) {
+      if (observers.current.has(element)) continue
+      observers.current.set(element, observeViewport(element, 300, (near, bounds) => {
+        const rect = near && bounds ? nearbyOverlayRect(host, bounds) : undefined
+        setVisible(previous => {
+          if (previous.has(element) === near) return previous
+          const next = new Map(previous)
+          if (near) next.set(element, rect)
+          else next.delete(element)
+          return next
+        })
+      }))
+    }
+  }, [blocks, host])
+
+  useLayoutEffect(() => () => {
+    for (const stop of observers.current.values()) stop()
+    observers.current.clear()
+  }, [])
+
+  return createPortal(blocks.flatMap(({ node, pos, anchor }) => {
+    if (!anchor || !visible.has(anchor) && anchor !== selected && anchor !== focused) return []
+    return [<CodeControls key={node.attrs.blockId ?? pos} node={node} pos={pos} anchor={anchor}
+      host={host} editor={editor} onFocus={setFocused} initial={visible.get(anchor)} />]
+  }), host)
 }

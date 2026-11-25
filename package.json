@@ -15,7 +15,9 @@
     "test:coverage": "vitest run --coverage",
     "electron:build": "node scripts/build-electron.mjs && vite build",
     "electron:dev": "node scripts/dev-electron.mjs",
-    "electron:pack": "pnpm electron:build && electron-builder --dir"
+    "electron:pack": "pnpm electron:build && electron-builder --dir",
+    "cli:build": "node scripts/build-cli.mjs",
+    "cli": "node dist-cli/lark-doc.mjs"
   },
   "dependencies": {
     "@floating-ui/dom": "1.8.0",
@@ -59,6 +61,7 @@
     "@vitest/coverage-v8": "5.1.1",
     "electron": "45.4.1",
     "electron-builder": "26.18.0",
+    "fake-indexeddb": "6.2.8",
     "fast-check": "4.11.0",
     "jsdom": "26.1.0",
     "postcss": "8.5.33",
@@ -71,6 +74,7 @@
   "build": {
     "appId": "com.larkblockeditor.desktop",
     "productName": "Lark Block Editor",
+    "icon": "build/icon.png",
     "directories": {
       "output": "release"
     },
@@ -81,6 +85,7 @@
     ],
     "npmRebuild": false,
     "mac": {
+      "icon": "build/icon.icns",
       "target": [
         "dir",
         "dmg"
@@ -89,5 +94,8 @@
       "identity": "-",
       "notarize": false
     }
+  },
+  "bin": {
+    "lark-doc": "./dist-cli/lark-doc.mjs"
   }
 }

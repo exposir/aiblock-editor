@@ -729,16 +729,16 @@ html[data-desktop-platform='darwin'] .workspace-header :is(a, button, input, sel
 
 /* Attached containers are flush at their first/last block so leading controls can
    sit exactly on the first line without phantom margins. */
-.document-editor :where(.task-item-content, .callout-content, .toggle-content, .column-grid) > [data-node-view-content-react] > :first-child,
+.document-editor :where(.task-item-content, .callout-content, .toggle-content, .column-grid) > :first-child,
 .document-editor :where(.toggle-body-inner, [data-column], td, th) > :first-child,
-.document-editor :where(.callout-content, .task-item-content) > [data-node-view-content-react] > :is(ul, ol):first-child > li:first-child,
+.document-editor :where(.callout-content, .task-item-content) > :is(ul, ol):first-child > li:first-child,
 .document-editor :where(.toggle-body-inner, [data-column], td, th) > :is(ul, ol):first-child > li:first-child {
   margin-top: 0;
 }
 
-.document-editor :where(.task-item-content, .callout-content, .toggle-content, .column-grid) > [data-node-view-content-react] > :last-child,
+.document-editor :where(.task-item-content, .callout-content, .toggle-content, .column-grid) > :last-child,
 .document-editor :where(.toggle-body-inner, [data-column], td, th) > :last-child,
-.document-editor :where(.callout-content, .task-item-content) > [data-node-view-content-react] > :is(ul, ol):last-child > li:last-child,
+.document-editor :where(.callout-content, .task-item-content) > :is(ul, ol):last-child > li:last-child,
 .document-editor :where(.toggle-body-inner, [data-column], td, th) > :is(ul, ol):last-child > li:last-child {
   margin-bottom: 0;
 }
@@ -827,14 +827,14 @@ html[data-desktop-platform='darwin'] .workspace-header :is(a, button, input, sel
 /* ---------- Columns ---------- */
 
 .column-layout { position: relative; }
-.column-grid > [data-node-view-content-react] {
+.column-grid {
   display: grid;
   grid-template-columns: var(--column-tracks);
 }
 
-.column-grid > [data-node-view-content-react] > [data-column] { min-width: 0; padding-inline: 0.75rem; }
-.column-grid > [data-node-view-content-react] > [data-column]:first-child { padding-left: 0; }
-.column-grid > [data-node-view-content-react] > [data-column]:last-child { padding-right: 0; }
+.column-grid > [data-column] { min-width: 0; padding-inline: 0.75rem; }
+.column-grid > [data-column]:first-child { padding-left: 0; }
+.column-grid > [data-column]:last-child { padding-right: 0; }
 
 .column-separator {
   position: absolute;
@@ -1250,7 +1250,7 @@ button.task-checkbox:hover { box-shadow: 0 0 0 3px var(--border-header); }
 .workspace-notice {
   position: fixed;
   z-index: 70;
-  bottom: 1rem;
+  bottom: 4.25rem;
   left: 50%;
   display: flex;
   align-items: center;
@@ -1458,3 +1458,85 @@ html[data-theme='dark'] .document-editor mark[data-color='#e9dcfa' i] { backgrou
   .workspace-tools .icon-control { width: 1.65rem; }
   .export-menu { position: fixed; top: calc(var(--header-h) + 0.2rem); right: 0.5rem; }
 }
+
+.workspace-load {
+  padding: 2rem;
+  color: var(--ink-secondary);
+}
+
+.workspace-load button {
+  margin-inline-start: 0.5rem;
+  text-decoration: underline;
+}
+
+.image-block {
+  display: flex;
+  justify-content: center;
+  margin: 0.85rem 0;
+}
+.image-block[data-align="left"] { justify-content: flex-start; }
+.image-block[data-align="right"] { justify-content: flex-end; }
+.image-block-frame {
+  position: relative;
+  display: block;
+  max-width: 100%;
+  min-width: 0;
+  overflow: hidden;
+  border-radius: 0.4rem;
+  background: var(--bg-hover);
+}
+.image-block-frame > img {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+}
+.image-controls {
+  position: absolute;
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 0.25rem;
+  padding: 0.3rem;
+  z-index: 5;
+  pointer-events: auto;
+  background: var(--bg-menu);
+  border: 1px solid var(--line-strong);
+  box-shadow: var(--shadow-float);
+  border-radius: 0.5rem;
+}
+.image-controls input { width: min(9rem, 30vw); }
+
+button.task-checkbox[aria-checked='false'] svg { visibility: hidden; }
+
+.image-block-frame > .image-unavailable {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  color: var(--ink-secondary);
+  font-size: 0.8rem;
+}
+.image-save-notice { bottom: 7.5rem; }
+.image-save-notice button { text-decoration: underline; }
+.workspace-conflict {
+  position: fixed;
+  z-index: 71;
+  bottom: 1rem;
+  left: 50%;
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  width: max-content;
+  max-width: calc(100vw - 1rem);
+  padding: 0.45rem 0.7rem;
+  transform: translateX(-50%);
+  border: 1px solid var(--line-strong);
+  border-radius: 8px;
+  background: var(--bg-menu);
+  box-shadow: var(--shadow-float);
+  color: var(--ink);
+  font-size: 0.8125rem;
+}
+.workspace-conflict button { padding: 0.25rem 0.45rem; text-decoration: underline; }

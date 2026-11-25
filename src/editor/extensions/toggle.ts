@@ -1,11 +1,12 @@
-import { Node, mergeAttributes } from '@tiptap/core'
-import { TextSelection, Plugin } from '@tiptap/pm/state'
+import { TextSelection, Plugin, PluginKey } from '@tiptap/pm/state'
 import { Decoration, DecorationSet } from '@tiptap/pm/view'
 import type { Node as ProseMirrorNode, ResolvedPos } from '@tiptap/pm/model'
-import { ReactNodeViewRenderer } from '@tiptap/react'
-import { createNodeIndex } from './document-changes'
+import { changedNodes, textEdits } from './document-changes'
 import type { ToggleAttributes } from '../types'
 import { ToggleView, toggleBodyId } from '../views/toggle-view'
+import { ToggleSchema, ToggleSummarySchema, ToggleContentSchema } from '../schema/toggle'
+
+export { ToggleSummarySchema as ToggleSummary, ToggleContentSchema as ToggleContent }
 
 declare module '@tiptap/core' {
   interface Commands<ReturnType> {
@@ -27,31 +28,7 @@ function closedToggleSummaryEnd($pos: ResolvedPos): number | null {
   return null
 }
 
-export const Toggle = Node.create({
-  name: 'toggle',
-  group: 'block',
-  content: 'toggleSummary toggleContent',
-  defining: true,
-  isolating: true,
-
-  addAttributes() {
-    return {
-      open: {
-        default: true,
-        parseHTML: element => element.getAttribute('data-open') !== 'false',
-        renderHTML: attrs => ({ 'data-open': String(attrs.open !== false) }),
-      },
-    }
-  },
-
-  parseHTML() {
-    return [{ tag: 'div[data-toggle]' }]
-  },
-
-  renderHTML({ HTMLAttributes }) {
-    return ['div', mergeAttributes(HTMLAttributes, { 'data-toggle': '' }), 0]
-  },
-
+export const Toggle = ToggleSchema.extend({
   addCommands() {
     return {
       insertToggle: attributes => ({ commands }) => commands.insertContent({
@@ -91,38 +68,60 @@ export const Toggle = Node.create({
   addProseMirrorPlugins() {
     const { instanceId } = this.editor
     const type = this.type
-    const toggles = createNodeIndex(node => node.type === type && node.childCount === 2)
-    let cachedDoc: ProseMirrorNode | undefined
-    let cachedEditingBodies = ''
-    let decorations = DecorationSet.empty
+    const key = new PluginKey<{ stable: DecorationSet; display: DecorationSet }>('toggleDecorations')
+
+    function makeBody(node: ProseMirrorNode, pos: number) {
+      if (node.type !== type || node.childCount !== 2) return null
+      const at = pos + 1 + node.child(0).nodeSize
+      const attrs: Record<string, string> = {}
+      const id = toggleBodyId(instanceId, node.attrs.blockId)
+      if (id) attrs.id = id
+      if (node.attrs.open === false) attrs.inert = ''
+      return Decoration.node(at, at + node.child(1).nodeSize, attrs)
+    }
+
+    function withEditing(stable: DecorationSet, { $head }: { $head: ResolvedPos }) {
+      const items: Decoration[] = []
+      for (let depth = 2; depth <= $head.depth; depth++) {
+        const node = $head.node(depth)
+        if (node.type.name !== 'toggleContent' || $head.node(depth - 1).attrs.open === false) continue
+        const pos = $head.before(depth)
+        items.push(Decoration.node(pos, pos + node.nodeSize, { 'data-toggle-editing': '' }))
+      }
+      return items.length ? stable.add($head.doc, items) : stable
+    }
 
     return [new Plugin({
-      props: {
-        decorations({ doc, selection }) {
-          const editingBodies = new Set<number>()
-          const { $head } = selection
-          for (let depth = 1; depth <= $head.depth; depth++) {
-            if ($head.node(depth).type.name === 'toggleContent') editingBodies.add($head.before(depth))
-          }
-          const editingKey = [...editingBodies].join(',')
-          if (doc === cachedDoc && editingKey === cachedEditingBodies) return decorations
-          cachedDoc = doc
-          cachedEditingBodies = editingKey
+      key,
+      state: {
+        init(_, { doc, selection }) {
           const items: Decoration[] = []
-          for (const { node, pos } of toggles(doc)) {
-            const bodyAt = pos + 1 + node.child(0).nodeSize
-            const attrs: Record<string, string> = {}
-            const id = toggleBodyId(instanceId, node.attrs.blockId)
-            if (id) attrs.id = id
-            if (node.attrs.open === false) attrs.inert = ''
-            // Scrolling or typing into the body needs its final layout immediately.
-            else if (editingBodies.has(bodyAt)) attrs['data-toggle-editing'] = ''
-            items.push(Decoration.node(bodyAt, bodyAt + node.child(1).nodeSize, attrs))
+          doc.descendants((node, pos) => {
+            const decoration = makeBody(node, pos)
+            if (decoration) items.push(decoration)
+            return !node.isTextblock
+          })
+          const stable = DecorationSet.create(doc, items)
+          return { stable, display: withEditing(stable, selection) }
+        },
+        apply(tr, previous, old) {
+          if (!tr.docChanged && old.selection.eq(tr.selection)) return previous
+          let stable = tr.docChanged ? previous.stable.map(tr.mapping, tr.doc) : previous.stable
+          if (tr.docChanged && !textEdits(tr)) {
+            const added: Decoration[] = []
+            const removed: Decoration[] = []
+            changedNodes(old.doc, tr.doc, (node, pos) => {
+              const decoration = makeBody(node, pos)
+              if (!decoration) return
+              removed.push(...stable.find(decoration.from, decoration.to).filter(item => item.from === decoration.from))
+              added.push(decoration)
+            })
+            stable = stable.remove(removed).add(tr.doc, added)
           }
-          decorations = DecorationSet.create(doc, items)
-          return decorations
+          return { stable, display: withEditing(stable, tr.selection) }
         },
       },
+      props: { decorations: state => key.getState(state)?.display },
       appendTransaction(_transactions, _oldState, state) {
         const { selection, doc } = state
         const head = closedToggleSummaryEnd(selection.$head)
@@ -137,39 +136,6 @@ export const Toggle = Node.create({
   },
 
   addNodeView() {
-    return ReactNodeViewRenderer(ToggleView, { attrs: ({ HTMLAttributes }) => HTMLAttributes })
-  },
-})
-
-export const ToggleSummary = Node.create({
-  name: 'toggleSummary',
-  content: 'inline*',
-  defining: true,
-
-  parseHTML() {
-    return [{ tag: 'div[data-toggle-summary]' }]
-  },
-
-  renderHTML({ HTMLAttributes }) {
-    return ['div', mergeAttributes(HTMLAttributes, { 'data-toggle-summary': '' }), 0]
-  },
-})
-
-export const ToggleContent = Node.create({
-  name: 'toggleContent',
-  content: 'block+',
-
-  parseHTML() {
-    return [{
-      tag: 'div[data-toggle-content]',
-      contentElement: element => element.querySelector<HTMLElement>(':scope > .toggle-body-inner') ?? element,
-    }]
-  },
-
-  renderHTML({ HTMLAttributes }) {
-    return [
-      'div', mergeAttributes(HTMLAttributes, { 'data-toggle-content': '' }),
-      ['div', { class: 'toggle-body-inner' }, 0],
-    ]
+    return ToggleView
   },
 })

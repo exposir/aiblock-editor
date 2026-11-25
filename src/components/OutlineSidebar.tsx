@@ -42,6 +42,7 @@ export function OutlineSidebar({ editor }: { editor: Editor | null }) {
     let headings: { id: string; top: number; bottom: number }[] = []
     let scrollHeight = 0
     let frame = 0
+    let settle: ReturnType<typeof setTimeout> | undefined
     const refresh = () => {
       if (frame) return
       frame = win.requestAnimationFrame(() => {
@@ -79,7 +80,10 @@ export function OutlineSidebar({ editor }: { editor: Editor | null }) {
     const followKeys = (event: KeyboardEvent) => {
       if (['PageUp', 'PageDown', 'Home', 'End', 'ArrowUp', 'ArrowDown'].includes(event.key)) followScroll()
     }
-    const stopLayout = subscribeOverlayLayout(root, measure)
+    const stopLayout = subscribeOverlayLayout(root, () => {
+      clearTimeout(settle)
+      settle = setTimeout(() => measure(element => element.getBoundingClientRect())?.(), 120)
+    })
     measure(element => element.getBoundingClientRect())?.()
     win.addEventListener('scroll', refresh, { passive: true })
     win.addEventListener('wheel', followScroll, { passive: true })
@@ -87,6 +91,7 @@ export function OutlineSidebar({ editor }: { editor: Editor | null }) {
     win.addEventListener('keydown', followKeys)
     return () => {
       win.cancelAnimationFrame(frame)
+      clearTimeout(settle)
       stopLayout()
       win.removeEventListener('scroll', refresh)
       win.removeEventListener('wheel', followScroll)

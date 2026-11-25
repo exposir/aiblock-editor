@@ -31,4 +31,13 @@ describe('block pointer geometry', () => {
     expect(marqueeEndpoints(blocks, area, 0, false)).toEqual({ anchor: 8, head: 8 })
     expect(marqueeEndpoints(blocks, rect(0, 0, 20, 10), 10, false)).toBeNull()
   })
+  it('finds a spanning column through overlapping rows and preserves document-order ties', () => {
+    const spanning = block(6, 0, rect(100, 10, 250, 5000))
+    const last = block(7000, 4, rect(260, 1500, 600, 1510))
+    const rows = Array.from({ length: 4500 }, (_, index) => block(index + 20, 4, rect(260, index, 600, index + 10)))
+    const blocks = [spanning, ...rows, last]
+    expect(hitBlock(blocks, { x: 120, y: 1505 })).toBe(spanning)
+    expect(hitBlock(blocks, { x: 300, y: 1505 })).toBe(last)
+    expect(hitBlock(blocks, { x: 100, y: 5001 })).toBeNull()
+  })
 })

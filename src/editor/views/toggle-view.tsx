@@ -1,30 +1,52 @@
-import { ChevronRight } from 'lucide-react'
-import { NodeViewContent, NodeViewWrapper } from '@tiptap/react'
-import type { NodeViewProps } from '@tiptap/core'
-import { FloatingBlockControl } from '../components/FloatingBlockControl'
+import type { NodeViewRendererProps } from '@tiptap/core'
+import type { ViewMutationRecord } from '@tiptap/pm/view'
+import { floatingBlockControl } from '../components/FloatingBlockControl'
+import { controlIcon, syncBlockAttributes } from './attached-node-view'
 
 export function toggleBodyId(editorId: string, blockId: unknown): string | undefined {
   return typeof blockId === 'string' ? `toggle-${editorId}-${encodeURIComponent(blockId)}` : undefined
 }
 
-export function ToggleView({ editor, node, getPos }: NodeViewProps) {
-  const open = node.attrs.open !== false
-  return (
-    <NodeViewWrapper className="toggle">
-      <FloatingBlockControl
-        className="block-control toggle-button"
-        aria-label="折叠块内容"
-        aria-expanded={open}
-        aria-controls={toggleBodyId(editor.instanceId, node.attrs.blockId)}
-        onMouseDown={event => event.preventDefault()}
-        onClick={() => {
-          const pos = getPos()
-          if (typeof pos === 'number') editor.commands.setToggleOpen(pos, !open)
-        }}
-      >
-        <ChevronRight size={17} aria-hidden="true" />
-      </FloatingBlockControl>
-      <NodeViewContent className="toggle-content" />
-    </NodeViewWrapper>
-  )
+export function ToggleView({ editor, view, node: initial, getPos }: NodeViewRendererProps) {
+  const owner = view.dom.ownerDocument
+  const dom = owner.createElement('div')
+  dom.className = 'toggle'
+  dom.dataset.toggle = ''
+  const contentDOM = owner.createElement('div')
+  contentDOM.className = 'toggle-content'
+  let node = initial
+  const control = floatingBlockControl(editor, view, dom, 'block-control toggle-button', (button, signal) => {
+    button.setAttribute('aria-label', '折叠块内容')
+    controlIcon(button, 'm9 18 6-6-6-6')
+    button.addEventListener('mousedown', event => event.preventDefault(), { signal })
+    button.addEventListener('click', () => {
+      const pos = getPos()
+      if (typeof pos === 'number') editor.commands.setToggleOpen(pos, node.attrs.open === false)
+    }, { signal })
+  }, button => {
+    button.setAttribute('aria-expanded', String(node.attrs.open !== false))
+    const id = toggleBodyId(editor.instanceId, node.attrs.blockId)
+    if (id) button.setAttribute('aria-controls', id)
+    else button.removeAttribute('aria-controls')
+  })
+  dom.append(control.anchor, contentDOM)
+  function sync() {
+    syncBlockAttributes(dom, node)
+    dom.dataset.open = String(node.attrs.open !== false)
+    control.refresh()
+  }
+  sync()
+  return {
+    dom, contentDOM,
+    update(next: typeof node) {
+      if (next.type !== node.type) return false
+      const markup = next.sameMarkup(node)
+      node = next
+      if (!markup) sync()
+      return true
+    },
+    ignoreMutation: (mutation: ViewMutationRecord) =>
+      mutation.type !== 'selection' && !contentDOM.contains(mutation.target),
+    destroy: control.destroy,
+  }
 }

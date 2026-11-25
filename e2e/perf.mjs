@@ -161,14 +161,14 @@ async function scrollSample(selector) {
 
 async function checkboxAlignment() {
   return page(() => {
-    const centers = selector => [...document.querySelectorAll(selector)].map(element => {
-      const rect = element.getBoundingClientRect()
-      return [rect.top + rect.height / 2, rect.left + rect.width / 2]
-    }).sort((a, b) => a[0] - b[0] || a[1] - b[1])
-    const anchors = centers('.ProseMirror .block-control-anchor.task-checkbox')
-    const buttons = centers('[data-document-overlays] button.task-checkbox:not([hidden])')
-    if (anchors.length < 70 || anchors.length !== buttons.length) throw new Error('Missing task controls')
-    return Math.max(...anchors.map(([y, x], i) => Math.max(Math.abs(y - buttons[i][0]), Math.abs(x - buttons[i][1]))))
+    const anchors = [...document.querySelectorAll('.ProseMirror .block-control-anchor.task-checkbox')]
+      .filter(anchor => !anchor.closest('[inert]'))
+      .map(anchor => anchor.getBoundingClientRect())
+    const buttons = [...document.querySelectorAll('[data-document-overlays] button.task-checkbox:not([hidden])')]
+      .map(button => button.getBoundingClientRect())
+    if (!buttons.length) throw new Error('Missing visible task controls')
+    const distance = (a, b) => Math.max(Math.abs(a.top - b.top), Math.abs(a.left - b.left))
+    return Math.max(...buttons.map(button => anchors.reduce((nearest, anchor) => Math.min(nearest, distance(anchor, button)), Infinity)))
   })
 }
 
@@ -209,6 +209,316 @@ async function counters() {
   return { ...dom, mountedNodes, heapMiB: Number((usedSize / 2 ** 20).toFixed(2)) }
 }
 
+async function seedAndOpen(mode) {
+  await delay(550) // Allow the current editor's mount normalization to reach storage before replacing the fixture.
+  const id = await page(async mode => {
+    let idCounter = 0
+    const block = (type, content, attrs = {}) => ({ type, attrs: { ...attrs, blockId: 'perf-' + ++idCounter }, ...(content ? { content } : {}) })
+    const text = value => ({ type: 'text', text: value })
+    const p = value => block('paragraph', [text(value)])
+    const tasks = i => block('taskList', [0, 1].map(n => block('taskItem', [p(`验收 ${i}.${n}`)], { checked: n === 0 })))
+    const callout = i => block('callout', [p('发布须经复核 ' + i)], { theme: 'blue', icon: '💡' })
+    const toggle = i => block('toggle', [
+      block('toggleSummary', [text('回滚 ' + i)]), block('toggleContent', [p('恢复上一版本 ' + i)]),
+    ], { open: i % 2 === 0 })
+    const columns = i => block('columnList', [50, 50].map(width => block('column', [p('步骤 ' + i)], { width })))
+    const shortCode = i => block('codeBlock', [text('const value = { deploy: true, revision: ' + i + ' };')], { language: 'typescript' })
+    const content = mode === 'xl'
+      ? Array.from({ length: 900 }, (_, i) => [
+        p('编辑起点与正文。' + i), i % 3 === 0 ? block('heading', [text('回归测试 ' + i)], { level: 2 }) : p('阅读连续正文与标记。'),
+        tasks(i), i % 3 ? callout(i) : columns(i), i % 2 ? toggle(i) : shortCode(i),
+      ]).flat()
+      : mode === 'code'
+        ? [block('codeBlock', [text(Array.from({ length: 500 }, (_, i) => [
+          `export interface Revision${i} { readonly id: string; metadata: Record<string, number> }`,
+          `const item${i}: Revision${i} = { id: "release-${i}", metadata: { attempts: 1 } };`,
+          `const names${i} = [item${i}.id, 'next'].map((name) => name.trim());`,
+          `if (names${i}.length > 0) console.log(names${i}.join(", "));`,
+          '// 发布记录与回滚快照',
+        ].join('\n')).join('\n'))], { language: 'typescript' })]
+        : Array.from({ length: 200 }, (_, i) => p('图片压测混合正文 ' + i))
+    if (mode === 'xl') {
+      const omitted = 17074 - countNodes({ content })
+      if (omitted < 0) {
+        const plain = content.filter(node => node.type === 'paragraph' && node.content[0]?.text === '阅读连续正文与标记。')
+        for (const node of plain.slice(0, -omitted)) delete node.content
+      }
+      for (let i = 0; i < omitted; i++) {
+        const paragraph = content[Math.floor(i / 2) * 5]
+        if (!paragraph) break
+        paragraph.content.push(i % 2 ? text(' 说明。') : { type: 'hardBreak' })
+      }
+    }
+    function countNodes(node) { return 1 + (node.content ?? []).reduce((count, child) => count + countNodes(child), 0) }
+    const id = crypto.randomUUID()
+    const db = await new Promise((resolve, reject) => {
+      const open = indexedDB.open('lark-block-editor')
+      open.onsuccess = () => resolve(open.result)
+      open.onerror = () => reject(open.error)
+    })
+    await new Promise((resolve, reject) => {
+      const transaction = db.transaction(['meta', 'pages'], 'readwrite')
+      transaction.oncomplete = resolve
+      transaction.onabort = () => reject(transaction.error)
+      const meta = transaction.objectStore('meta')
+      const request = meta.get('workspace')
+      request.onsuccess = () => {
+        const index = request.result
+        const now = Date.now()
+        const title = mode === 'xl' ? 'XL 性能工作区' : mode === 'code' ? '超长 TypeScript' : '百图压测'
+        const record = { id, title, parentId: null, icon: '📄', order: index.pages.length, createdAt: now, updatedAt: now, comments: [] }
+        meta.put({ ...index, activePageId: id, pages: [...index.pages, record] }, 'workspace')
+        transaction.objectStore('pages').put({ id, content: { type: 'doc', content }, updatedAt: now }, id)
+      }
+    })
+    db.close()
+    history.replaceState(null, '', '#page=' + id)
+    return id
+  }, mode)
+  await send('Page.reload')
+  await until(() => page(id => location.hash === '#page=' + id &&
+    !!document.querySelector('.ProseMirror')?.editor?.isInitialized, id), 'Seeded document did not open', 30000)
+    .catch(async error => {
+      const state = await page(() => ({ hash: location.hash, title: document.querySelector('input[aria-label="文档标题"]')?.value,
+        status: [...document.querySelectorAll('[role=status]')].map(node => node.textContent), blocks: document.querySelector('.ProseMirror')?.children.length }))
+      throw new Error(error.message + ' (' + id + '): ' + JSON.stringify(state))
+    })
+  await frame()
+  return page(() => Math.round(performance.now()))
+}
+
+function ceiling(value, max, metric) {
+  assert.ok(Number.isFinite(value) && value <= max, `${metric}: ${value}, maximum ${max}`)
+}
+
+async function xlSample() {
+  const firstOpenMs = await seedAndOpen('xl')
+  const shape = await page(() => {
+    const doc = document.querySelector('.ProseMirror').editor.state.doc
+    let nodes = 1
+    doc.descendants(() => { nodes++ })
+    return { blocks: doc.childCount, nodes }
+  })
+  assert.deepEqual(shape, { blocks: 4500, nodes: 17074 })
+  const loaded = await counters()
+  const controls = await page(() => document.querySelectorAll('.floating-block-control, .code-control-strip').length)
+  await openPage('文档协作与发布手册')
+  const switchBackMs = await openPage('XL 性能工作区')
+  await page(() => {
+    document.querySelector('button[aria-label="目录侧栏"]').click()
+    const root = document.querySelector('.ProseMirror')
+    root.editor.commands.setTextSelection(2)
+    root.focus()
+  })
+  await frame()
+  await page(startMeasurements)
+  for (let i = 0; i < 20; i++) {
+    await send('Input.dispatchKeyEvent', { type: 'rawKeyDown', key: 'Enter', code: 'Enter', windowsVirtualKeyCode: 13 })
+    await send('Input.dispatchKeyEvent', { type: 'keyUp', key: 'Enter', code: 'Enter', windowsVirtualKeyCode: 13 })
+  }
+  await frame()
+  const enter = await page(() => window.finishPerfSample())
+  assert.equal(enter.keys.length, 20)
+  const point = await page(() => {
+    const paragraph = document.querySelectorAll('.ProseMirror > p')[26]
+    paragraph.scrollIntoView({ block: 'center' })
+    const rect = paragraph.getBoundingClientRect()
+    return { x: Math.round(rect.left + rect.width / 2), y: Math.round(rect.top + rect.height / 2) }
+  })
+  await frame()
+  await page(startMeasurements)
+  const tick = await page(() => performance.now())
+  await move(point)
+  await frame()
+  const hover = await page(start => ({ ms: +(performance.now() - start).toFixed(2),
+    visible: !!document.querySelector('.block-handles'), ...window.finishPerfSample() }), tick)
+  const scroll = await scrollSample('.ProseMirror pre')
+  const editableControls = await page(() => document.querySelectorAll('.ProseMirror :is(button,input,select,textarea)').length)
+  assert.equal(editableControls, 0)
+  const summary = { shape, firstOpenMs, switchBackMs, loaded, controls, editableControls,
+    enter: { p50Ms: percentile(enter.keys, .5), p95Ms: percentile(enter.keys, .95), frameP95Ms: percentile(enter.frames, .95), rects: enter.rects },
+    hover: { ms: hover.ms, rects: hover.rects, visible: hover.visible }, scroll }
+  ceiling(firstOpenMs, 1500, 'XL first open (ms)')
+  ceiling(switchBackMs, 1000, 'XL switch back (ms)')
+  ceiling(controls, 100, 'XL mounted tools')
+  ceiling(loaded.jsEventListeners, 2000, 'XL event listeners')
+  ceiling(summary.enter.p95Ms, 30, 'XL Enter transaction P95 (ms)')
+  ceiling(summary.enter.frameP95Ms, 55, 'XL Enter frame P95 (ms)')
+  ceiling(summary.enter.rects, 2500, 'XL Enter geometry reads')
+  assert.ok(hover.visible, 'The first pointer move must reveal the block handle')
+  ceiling(hover.rects, 1200, 'XL first hover geometry reads')
+  ceiling(hover.ms, 160, 'XL first hover (ms)')
+  ceiling(scroll.p95Ms, 24, 'XL scroll frame P95 (ms)')
+  ceiling(scroll.longFrames, 6, 'XL scroll long frames')
+  assert.equal(scroll.writes, 0, 'Stationary XL wheel must not write overlay styles')
+  if (process.argv.includes('--geometry-only')) return summary
+  await page(() => document.querySelector('button[aria-label="页面侧栏"]').click())
+  await openPage('文档协作与发布手册')
+  const codeOpenMs = await seedAndOpen('code')
+  await page(() => {
+    const root = document.querySelector('.ProseMirror')
+    root.editor.commands.setTextSelection(8)
+    root.focus()
+  })
+  await frame()
+  await page(startMeasurements)
+  const keys = 12
+  for (let i = 0; i < keys; i++) await send('Input.insertText', { text: 'a' })
+  await frame()
+  const code = await page(() => window.finishPerfSample())
+  assert.equal(code.keys.length, keys)
+  await until(() => page(() => !!document.querySelector('.ProseMirror .hljs-keyword')), 'Long code highlight did not settle')
+  const longCode = { lines: 2500, codeOpenMs, keys, p50Ms: percentile(code.keys, .5),
+    p95Ms: percentile(code.keys, .95), frameP95Ms: percentile(code.frames, .95) }
+  ceiling(codeOpenMs, 1200, 'Long code first open (ms)')
+  ceiling(longCode.p95Ms, 20, 'Long code typing transaction P95 (ms)')
+  ceiling(longCode.frameP95Ms, 40, 'Long code typing frame P95 (ms)')
+  return { ...summary, longCode }
+}
+
+async function imageSample() {
+  const mixedTextOpenMs = await seedAndOpen('images')
+  const bytes = await page(async () => {
+    const dt = new DataTransfer()
+    const canvas = document.createElement('canvas')
+    const context = canvas.getContext('2d')
+    let bytes = 0
+    let seed = 997
+    for (let i = 0; i < 100; i++) {
+      canvas.width = 160 + (i * 17) % 330
+      canvas.height = 92 + (i * 9) % 240
+      const pixels = context.createImageData(canvas.width, canvas.height)
+      for (let at = 0; at < pixels.data.length; at += 4) {
+        seed = Math.imul(seed, 1664525) + 1013904223 | 0
+        pixels.data[at] = seed >>> 24
+        pixels.data[at + 1] = seed >>> 16
+        pixels.data[at + 2] = seed >>> 8
+        pixels.data[at + 3] = 255
+      }
+      context.putImageData(pixels, 0, 0)
+      const blob = await new Promise(resolve => canvas.toBlob(resolve, i % 2 ? 'image/webp' : 'image/png', .8))
+      bytes += blob.size
+      dt.items.add(new File([blob], '压测-' + i + '.' + (i % 2 ? 'webp' : 'png'), { type: blob.type }))
+    }
+    const root = document.querySelector('.ProseMirror')
+    root.editor.commands.setTextSelection(2)
+    root.focus()
+    window.imagePasteStart = performance.now()
+    root.dispatchEvent(new ClipboardEvent('paste', { bubbles: true, cancelable: true, clipboardData: dt }))
+    return bytes
+  })
+  await until(() => page(() => document.querySelectorAll('[data-image-block]').length === 100), '100 images did not insert', 60000)
+  const { insertedMs, id, remaining, restored } = await page(() => {
+    const started = performance.now()
+    const id = new URLSearchParams(location.hash.slice(1)).get('page')
+    const root = document.querySelector('.ProseMirror')
+    const imageIds = () => root.editor.state.doc.children.filter(node => node.type.name === 'imageBlock').map(node => node.attrs.assetId)
+    const initial = imageIds()
+    root.editor.commands.undo()
+    const remaining = imageIds().length
+    root.editor.commands.redo()
+    return { insertedMs: Math.round(started - window.imagePasteStart), id, remaining,
+      restored: JSON.stringify(imageIds()) === JSON.stringify(initial) }
+  })
+  assert.equal(remaining, 0, 'One undo must remove the entire paste')
+  assert.ok(restored, 'One redo must restore the original 100 asset IDs in order')
+  await openPage('文档协作与发布手册')
+  await until(() => page(async id => {
+    const db = await new Promise(resolve => {
+      const request = indexedDB.open('lark-block-editor')
+      request.onsuccess = () => resolve(request.result)
+    })
+    try {
+      const tx = db.transaction(['pages', 'assets'])
+      const read = request => new Promise((resolve, reject) => {
+        request.onsuccess = () => resolve(request.result)
+        request.onerror = () => reject(request.error)
+      })
+      const [shard, keys] = await Promise.all([read(tx.objectStore('pages').get(id)), read(tx.objectStore('assets').getAllKeys())])
+      const images = shard?.content.content.filter(node => node.type === 'imageBlock')
+      const saved = new Set(keys)
+      return images?.length === 100 && images.every(node => saved.has(node.attrs.assetId))
+    } finally { db.close() }
+  }, id), 'Assets and their page shard did not persist after switching away', 90000)
+  const durableMs = await page(() => Math.round(performance.now() - window.imagePasteStart))
+  const switchBackMs = await openPage('百图压测')
+  await send('Page.reload')
+  await until(() => page(() => !!document.querySelector('.ProseMirror')?.editor?.isInitialized &&
+    document.querySelectorAll('[data-image-block]').length === 100), 'Reload lost images', 60000)
+  await frame()
+  const reopenMs = await page(() => Math.round(performance.now()))
+  await until(() => page(() => {
+    const first = document.querySelector('[data-image-block] img')
+    return first?.complete && first.naturalWidth > 0
+  }), 'The first visible image did not load')
+  await page(() => {
+    const frames = [...document.querySelectorAll('.image-block-frame')]
+    const firstMounted = !!frames[0].querySelector('img')
+    const initialMounted = frames.filter(frame => frame.querySelector('img')).length
+    const initialOutside = frames.filter(frame => {
+      const rect = frame.getBoundingClientRect()
+      return (rect.top >= innerHeight + 801 || rect.bottom <= -801) && frame.querySelector('img')
+    }).length
+    const baseline = frames.map(element => element.getBoundingClientRect().height)
+    let resized = 0
+    let shifts = 0
+    const resize = new ResizeObserver(entries => {
+      for (const entry of entries) if (Math.abs(entry.contentRect.height - baseline[frames.indexOf(entry.target)]) > .1) resized++
+    })
+    for (const frame of frames) resize.observe(frame)
+    const layout = new PerformanceObserver(list => {
+      for (const entry of list.getEntries()) if (!entry.hadRecentInput) shifts += entry.value
+    })
+    layout.observe({ type: 'layout-shift' })
+    let peak = 0, decoded = 0, seen = new Set(), id
+    function sample() {
+      const images = [...document.querySelectorAll('[data-image-block] img')]
+      peak = Math.max(peak, images.length)
+      decoded = Math.max(decoded, images.filter(img => img.complete && img.naturalWidth).length)
+      for (const img of images) if (img.complete && img.naturalWidth) seen.add(img.closest('[data-image-block]'))
+      id = requestAnimationFrame(sample)
+    }
+    sample()
+    window.imageSample = () => {
+      cancelAnimationFrame(id)
+      resize.disconnect()
+      layout.disconnect()
+      return { peak, decoded, everDecoded: seen.size, resized, cls: +shifts.toFixed(5),
+        firstMounted, initialMounted, initialOutside, firstReleased: !frames[0].querySelector('img'),
+        mountedAtEnd: document.querySelectorAll('[data-image-block] img').length,
+        maxHeightDelta: Math.max(...frames.map((frame, index) => Math.abs(frame.getBoundingClientRect().height - baseline[index]))),
+        controls: document.querySelectorAll('.ProseMirror :is(button,input,select,textarea)').length }
+    }
+  })
+  await page(startMeasurements)
+  const inPaper = { x: 760, y: 660 }
+  for (let i = 0; i < 115; i++) await wheel(inPaper, 330)
+  await frame()
+  const sample = await page(() => ({ ...window.finishPerfSample(), ...window.imageSample() }))
+  assert.equal(sample.firstMounted, true)
+  assert.equal(sample.initialOutside, 0)
+  assert.ok(sample.initialMounted > 0 && sample.initialMounted < 25)
+  assert.equal(sample.firstReleased, true)
+  assert.equal(sample.everDecoded, 100, 'Each image must decode while scrolling')
+  ceiling(sample.peak, 24, 'Image scroll simultaneous mounted bitmaps')
+  ceiling(insertedMs, 1500, '100-image batch insert (ms)')
+  ceiling(durableMs, 5000, '100-image body and binary durability (ms)')
+  ceiling(reopenMs, 1000, '100-image reload (ms)')
+  ceiling(switchBackMs, 750, '100-image switch back (ms)')
+  ceiling(percentile(sample.frames, .95), 24, '100-image scroll frame P95 (ms)')
+  ceiling(sample.frames.filter(ms => ms > 20).length, 8, '100-image scroll long frames')
+  assert.equal(sample.writes, 0)
+  assert.equal(sample.controls, 0)
+  assert.equal(sample.resized, 0)
+  assert.equal(sample.maxHeightDelta, 0)
+  assert.equal(sample.cls, 0)
+  return { images: 100, bytes, insertedMs, durableMs, mixedTextOpenMs, reopenMs, switchBackMs,
+    p95Ms: percentile(sample.frames, .95), longFrames: sample.frames.filter(ms => ms > 20).length,
+    peak: sample.peak, decoded: sample.decoded, everDecoded: sample.everDecoded, mountedAtEnd: sample.mountedAtEnd,
+    firstMounted: sample.firstMounted, initialMounted: sample.initialMounted, initialOutside: sample.initialOutside,
+    cls: sample.cls, resized: sample.resized, maxHeightDelta: sample.maxHeightDelta, overlayWrites: sample.writes }
+}
+
 try {
   const portFile = await until(() => readFile(join(profile, 'DevToolsActivePort'), 'utf8').catch(() => null),
     'Chromium did not start. Check CHROME_BIN.', 5000)
@@ -227,6 +537,13 @@ try {
   await send('Page.navigate', { url })
   await until(editorReady, 'First editor not interactive')
   await frame()
+  const custom = process.argv.includes('--xl') || process.argv.includes('--images')
+  if (custom) {
+    const result = {}
+    if (process.argv.includes('--xl')) result.xl = await xlSample()
+    if (process.argv.includes('--images')) result.images = await imageSample()
+    console.log(JSON.stringify(result, null, 2))
+  } else {
   const initialMs = Math.round(await page(() => performance.now()))
   const galleryStart = await page(() => performance.now())
   const galleryMs = await openPage(gallery)
@@ -314,6 +631,7 @@ try {
   console.log(JSON.stringify({ blocks, initialMs, galleryMs, initialPreviews, galleryFirstSvgMs: Math.round(galleryReadyMs),
     typing, scroll: { diagram, toolbar, code, table }, theme: { light, dark },
     memory: { before, after, retained }, checkboxErrorPx, editableControls }, null, 2))
+  }
 } finally {
   socket?.close()
   chrome.kill()

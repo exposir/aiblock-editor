@@ -1,0 +1,52 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024">
+  <defs>
+    <path id="tile" d="M512 96c190 0 288 0 352 64s64 162 64 352 0 288-64 352-162 64-352 64-288 0-352-64S96 702 96 512s0-288 64-352 162-64 352-64Z"/>
+    <path id="sheet" d="M322 196h299c14 0 26 5 36 15l92 92c10 10 15 22 15 36v424c0 36-23 58-58 58H322c-36 0-62-25-62-61V258c0-36 26-62 62-62Z"/>
+    <linearGradient id="charcoal" x1="0" y1="0" x2=".72" y2="1">
+      <stop stop-color="#39332F"/>
+      <stop offset="1" stop-color="#1F1E1D"/>
+    </linearGradient>
+    <linearGradient id="paper" x1=".2" y1="0" x2=".65" y2="1">
+      <stop stop-color="#FAF7F2"/>
+      <stop offset="1" stop-color="#EFECE4"/>
+    </linearGradient>
+    <linearGradient id="clay" x1="0" y1="0" x2="1" y2="1">
+      <stop stop-color="#D47758"/>
+      <stop offset="1" stop-color="#C96442"/>
+    </linearGradient>
+    <filter id="tile-shadow" x="0" y="0" width="1024" height="1024" filterUnits="userSpaceOnUse" color-interpolation-filters="sRGB">
+      <feDropShadow dx="0" dy="17" stdDeviation="22" flood-color="#1F1E1D" flood-opacity=".25"/>
+    </filter>
+    <filter id="paper-shadow" x="192" y="150" width="640" height="780" filterUnits="userSpaceOnUse" color-interpolation-filters="sRGB">
+      <feDropShadow dx="0" dy="20" stdDeviation="20" flood-color="#100E0D" flood-opacity=".38"/>
+    </filter>
+  </defs>
+
+  <use href="#tile" fill="url(#charcoal)" filter="url(#tile-shadow)"/>
+  <use href="#tile" fill="none" stroke="#FAF7F2" stroke-width="2" stroke-opacity=".11"/>
+  <use href="#sheet" fill="url(#paper)" filter="url(#paper-shadow)"/>
+  <path d="M637 199c8 2 14 6 20 12l92 92c6 6 10 13 12 21h-89c-21 0-35-14-35-35Z" fill="#DCD4C8"/>
+
+  <rect x="321" y="357" width="131" height="132" rx="28" fill="url(#clay)"/>
+  <g fill="#FAF7F2">
+    <circle cx="374" cy="399" r="8"/>
+    <circle cx="399" cy="399" r="8"/>
+    <circle cx="374" cy="423" r="8"/>
+    <circle cx="399" cy="423" r="8"/>
+    <circle cx="374" cy="447" r="8"/>
+    <circle cx="399" cy="447" r="8"/>
+  </g>
+  <rect x="484" y="374" width="218" height="31" rx="15.5" fill="#1F1E1D"/>
+  <rect x="484" y="434" width="157" height="25" rx="12.5" fill="#8C8175"/>
+
+  <rect x="321" y="544" width="174" height="168" rx="24" fill="#DED7CC"/>
+  <rect x="523" y="544" width="179" height="168" rx="24" fill="#DED7CC"/>
+  <g fill="#695F55">
+    <rect x="350" y="581" width="113" height="19" rx="9.5"/>
+    <rect x="552" y="581" width="116" height="19" rx="9.5"/>
+  </g>
+  <g fill="#A4988C">
+    <rect x="350" y="623" width="78" height="15" rx="7.5"/>
+    <rect x="552" y="623" width="82" height="15" rx="7.5"/>
+  </g>
+</svg>

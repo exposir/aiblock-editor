@@ -1,3 +1,4 @@
+import { chooseImages } from './image-block'
 import { Extension } from '@tiptap/core'
 import type { Editor, Range } from '@tiptap/core'
 import { PluginKey } from '@tiptap/pm/state'
@@ -51,6 +52,7 @@ function insertSlashBlock(editor: Editor, range: Range, item: SlashItem): void {
         content: [{ type: 'text', text: item.id === 'mermaid' ? diagramTemplates[0].source : exampleFormula }],
       }).run()
       break
+    case 'imageBlock': chooseImages(editor.view, range); break
     case 'codeBlock': chain.setCodeBlock().run(); break
   }
 }

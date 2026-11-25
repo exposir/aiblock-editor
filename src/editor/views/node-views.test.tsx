@@ -3,6 +3,7 @@ import { EditorContent, useEditor } from '@tiptap/react'
 import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { useState } from 'react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { mockViewport } from '../../test/viewport-fixture'
 import { createEditorExtensions } from '../extensions'
 
 const extensions = createEditorExtensions()
@@ -195,5 +196,25 @@ describe('node views & floating block controls', () => {
     await waitFor(() => expect(content).toHaveAttribute('inert'))
     await waitFor(() => expect(checkbox().hidden).toBe(true))
     expect(editor.view.dom.querySelectorAll('button, input, select, textarea')).toHaveLength(0)
+  })
+  it('mounts the task control near the viewport or for the current selection, then releases it', async () => {
+    const viewport = mockViewport()
+    try {
+      const { editor } = mount('<p>先读正文</p>' + taskContent)
+      const item = editor.view.dom.querySelector('[data-type="taskItem"]')!
+      const anchor = item.querySelector('.block-control-anchor')!
+      expect(screen.queryByRole('checkbox')).toBeNull()
+      act(() => viewport.show(anchor, true, 300))
+      expect(await screen.findByRole('checkbox')).toHaveAccessibleName('Task A')
+      act(() => viewport.show(anchor, false, 300))
+      expect(screen.queryByRole('checkbox')).toBeNull()
+      const from = editor.view.posAtDOM(item.querySelector('p')!, 0)
+      act(() => { editor.commands.setTextSelection(from) })
+      expect(screen.getByRole('checkbox')).toBeInTheDocument()
+      act(() => { editor.commands.setTextSelection(1) })
+      expect(screen.queryByRole('checkbox')).toBeNull()
+    } finally {
+      vi.unstubAllGlobals()
+    }
   })
 })

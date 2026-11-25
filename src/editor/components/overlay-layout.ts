@@ -1,3 +1,5 @@
+import { toOverlayRect } from './overlay-geometry'
+
 type LayoutRead = (rect: (element: Element) => DOMRect) => void | (() => void)
 
 interface SharedLayout {
@@ -11,6 +13,21 @@ export function findOverlayHost(element: Element): HTMLElement | null {
   const surface = element.closest('[data-document-surface]')
   const host = surface?.querySelector<HTMLElement>('[data-document-overlays]')
   return host ?? null
+}
+
+const pageOrigins = new WeakMap<Element, { x: number; y: number }>()
+
+function rememberHost(host: Element, rect: DOMRectReadOnly) {
+  const win = host.ownerDocument.defaultView
+  const origin = { x: rect.left + (win?.scrollX ?? 0), y: rect.top + (win?.scrollY ?? 0) }
+  pageOrigins.set(host, origin)
+  return origin
+}
+
+export function nearbyOverlayRect(host: HTMLElement, bounds: DOMRectReadOnly) {
+  const win = host.ownerDocument.defaultView
+  const origin = pageOrigins.get(host) ?? rememberHost(host, host.getBoundingClientRect())
+  return toOverlayRect(bounds, { x: origin.x - (win?.scrollX ?? 0), y: origin.y - (win?.scrollY ?? 0) })
 }
 
 /**
@@ -43,6 +60,8 @@ export function subscribeOverlayLayout(root: HTMLElement, listener: LayoutRead):
         }
         return value
       }
+      const host = findOverlayHost(root)
+      if (host && pageOrigins.has(host)) rememberHost(host, rect(host))
       const writes = Array.from(listeners, read => read(rect))
       for (const write of writes) write?.()
     }
@@ -55,21 +74,51 @@ export function subscribeOverlayLayout(root: HTMLElement, listener: LayoutRead):
 
     const resize = typeof ResizeObserver === 'function' ? new ResizeObserver(schedule) : null
     const observed = new Set<Element>()
-    const syncBlocks = () => {
-      const blocks = new Set([...root.children, ...root.querySelectorAll('[data-column] > *')])
-      for (const block of observed) if (!blocks.has(block)) resize?.unobserve?.(block)
-      for (const block of blocks) if (!observed.has(block)) resize?.observe(block)
-      observed.clear()
-      for (const block of blocks) observed.add(block)
+    function add(block: Element) {
+      if (observed.has(block)) return
+      observed.add(block)
+      resize?.observe(block)
+    }
+    function remove(block: Element) {
+      if (root.contains(block) && (block.parentElement === root || block.parentElement?.matches('[data-column]'))) return
+      if (observed.delete(block)) resize?.unobserve?.(block)
+    }
+    function childrenOfColumns(element: Element, visit: (block: Element) => void) {
+      if (element.matches('[data-column]')) for (const child of element.children) visit(child)
+      for (const block of element.querySelectorAll('[data-column] > *')) visit(block)
     }
     resize?.observe(root)
-    syncBlocks()
+    for (const block of root.children) {
+      add(block)
+      childrenOfColumns(block, add)
+    }
     const mutation = new MutationObserver(records => {
-      const structural = records.some(record => record.type === 'childList' &&
-        [...record.addedNodes, ...record.removedNodes].some(node => node.nodeType === Node.ELEMENT_NODE))
-      if (structural) syncBlocks()
-      if (structural || records.some(record => record.type === 'attributes' &&
-          (record.target !== root || record.attributeName !== 'class')) || (!resize && records.length)) schedule()
+      let changed = false
+      for (const record of records) {
+        const target = record.target
+        // Fixed-ratio images can replace their pixels without changing document geometry.
+        if (target instanceof Element && target.closest('[data-image-block]') &&
+            !target.matches('[data-image-block], .image-block-frame[style]')) continue
+        if (target instanceof Element && target.matches('.image-block-frame') && record.type === 'childList') continue
+        if (record.type === 'childList') {
+          const direct = target === root || target instanceof Element && target.matches('[data-column]')
+          for (const node of record.removedNodes) {
+            if (!(node instanceof Element)) continue
+            remove(node)
+            childrenOfColumns(node, remove)
+            changed = true
+          }
+          for (const node of record.addedNodes) {
+            if (!(node instanceof Element)) continue
+            if (direct && root.contains(node)) add(node)
+            if (root.contains(node)) childrenOfColumns(node, add)
+            changed = true
+          }
+        } else if (record.type === 'attributes' && (target !== root || record.attributeName !== 'class')) {
+          changed = true
+        }
+      }
+      if (changed || (!resize && records.length)) schedule()
     })
     mutation.observe(root, { subtree: true, childList: true, attributes: true, characterData: !resize })
     root.addEventListener('scroll', schedule, { capture: true, passive: true })

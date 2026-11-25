@@ -1,9 +1,13 @@
+import { EditorState, Selection } from '@tiptap/pm/state'
+import { imageUploadFailures, retryImageUploads, subscribeImageUploads } from './editor/extensions/image-assets'
+import { insertImageBlocks } from './editor/extensions/image-block'
+import type { ImageAttributes } from './editor/extensions/image-attributes'
 import { getSchema } from '@tiptap/core'
 import type { Editor } from '@tiptap/core'
 import { Check, ChevronDown, ChevronRight, ClipboardCopy, Download, FileDown, FileUp, Keyboard, List, MessagesSquare, Monitor, Moon, PanelLeft, RotateCcw, Sun, X } from 'lucide-react'
-import { useCallback, useEffect, useEffectEvent, useLayoutEffect, useRef, useState } from 'react'
-import { getDesktopBridge, openDesktopWorkspaceStorage, openMarkdownFile, saveDocumentFile, suggestedFileName } from './desktop/bridge'
-import type { DesktopBridge, DesktopMenuCommand, DocumentFileFormat, MarkdownFile, WorkspacePersistence } from './desktop/bridge'
+import { useCallback, useEffect, useEffectEvent, useLayoutEffect, useRef, useState, useSyncExternalStore } from 'react'
+import { getDesktopBridge, openMarkdownFile, saveDocumentFile, suggestedFileName } from './desktop/bridge'
+import type { DesktopMenuCommand, DocumentFileFormat, MarkdownFile } from './desktop/bridge'
 import { createEditorExtensions } from './editor/extensions'
 import { docToMarkdown } from './editor/markdown/markdown-codec'
 import { downloadBlob, isMarkdownFile } from './editor/markdown/markdown-files'
@@ -19,7 +23,8 @@ import {
   DEFAULT_PAGE_TITLE, activatePage, addPage, copyPage, findPage, formatPageHash, hasPageContent,
   importMarkdownPage, movePage, pageAncestors, pageTitle, removePage, updatePage,
 } from './workspace/page-store'
-import type { PageRecord } from './workspace/page-store'
+import type { WorkspacePage, WorkspaceState } from './workspace/page-store'
+import type { WorkspacePersistence } from './workspace/workspace-format'
 import { newPageIdentity, useWorkspace } from './workspace/useWorkspace'
 
 const extensions = createEditorExtensions()
@@ -48,9 +53,10 @@ function ThemeControl({ mode, setMode }: Appearance) {
   </button>
 }
 
-function Workspace({ workspace, anchor, saveFailed, change, reset, stageContent, appearance }: ReturnType<typeof useWorkspace> & {
-  appearance: Appearance
-}) {
+function Workspace({ workspace, anchor, saveFailed, loadFailed, retry, change, reset, stageContent, loadPage, deferTitle,
+  externalConflict, keepLocal, reloadExternal, appearance }:
+  Omit<ReturnType<typeof useWorkspace>, 'workspace'> & { workspace: WorkspaceState<WorkspacePage>; appearance: Appearance },
+) {
   const help = useRef<HTMLDialogElement>(null)
   const titleInput = useRef<HTMLInputElement>(null)
   const focusTitleFor = useRef<string | null>(null)
@@ -65,7 +71,11 @@ function Workspace({ workspace, anchor, saveFailed, change, reset, stageContent,
   const [notice, setNotice] = useState('')
   const [dialog, setDialog] = useState<WorkspaceDialogRequest | null>(null)
   const [binding, setBinding] = useState<{ pageId: string; editor: Editor } | null>(null)
+  const bindingRef = useRef(binding)
+  bindingRef.current = binding
+  const failedImages = useSyncExternalStore(subscribeImageUploads, imageUploadFailures)
   const activePage = findPage(workspace, workspace.activePageId)!
+  const loadedPage = activePage.content && { ...activePage, content: activePage.content }
   const copied = copiedPageId === activePage.id
   const editor = binding?.pageId === activePage.id && !binding.editor.isDestroyed ? binding.editor : null
   const ancestors = pageAncestors(workspace, activePage.id)
@@ -80,6 +90,7 @@ function Workspace({ workspace, anchor, saveFailed, change, reset, stageContent,
   }, [activePage.id])
 
   useEffect(() => {
+    setBinding(previous => previous?.pageId === activePage.id ? previous : null)
     setToolsOpen(false)
     setCopiedPageId(null)
     clearTimeout(copyTimer.current)
@@ -104,9 +115,15 @@ function Workspace({ workspace, anchor, saveFailed, change, reset, stageContent,
   useEffect(() => () => clearTimeout(copyTimer.current), [])
 
   const editPage: EditPage = (id, patch, deferred) => {
+    if (deferred && typeof patch !== 'function' && typeof patch.title === 'string') {
+      deferTitle(id, patch.title)
+      return
+    }
     change(current => {
       const page = findPage(current, id)
-      return page ? updatePage(current, id, typeof patch === 'function' ? patch(page) : patch, Date.now()) : current
+      if (!page) return current
+      if (typeof patch !== 'function') return updatePage(current, id, patch, Date.now())
+      return page.content ? updatePage(current, id, patch({ ...page, content: page.content }), Date.now()) : current
     }, deferred)
   }
 
@@ -138,29 +155,48 @@ function Workspace({ workspace, anchor, saveFailed, change, reset, stageContent,
     if (!wideViewport()) setNavigationOpen(false)
   }
 
-  function documentFor(page: PageRecord) {
-    return page.id === activePage.id && editor ? editor.state.doc : schema.nodeFromJSON(page.content)
+  function liveDocument(id: string) {
+    return id === activePage.id && editor ? editor.state.doc : null
   }
 
-  function pageAction(action: PageAction, id: string) {
+  async function pageAction(action: PageAction, id: string) {
     const page = findPage(workspace, id)
     if (!page) return
-    switch (action) {
-      case 'duplicate':
-        change(current => copyPage(current, id, newPageIdentity()))
-        if (!wideViewport()) setNavigationOpen(false)
-        return
-      case 'export':
-        void exportPage(page, 'markdown')
-        return
-      case 'delete': {
-        const candidate = id === activePage.id && editor ? { ...page, content: editor.getJSON() } : page
-        if (!hasPageContent(candidate) && pageTitle(page) === DEFAULT_PAGE_TITLE && !workspace.pages.some(child => child.parentId === id)) {
-          change(current => removePage(current, id, newPageIdentity()))
+    try {
+      switch (action) {
+        case 'duplicate': {
+          const live = liveDocument(id)
+          const content = live?.toJSON() ?? (await loadPage(id))?.content
+          if (!content) return
+          change(current => copyPage(current, id, newPageIdentity(), content))
+          if (!wideViewport()) setNavigationOpen(false)
           return
         }
-        break
+        case 'export':
+          void exportPage(page, 'markdown')
+          return
+        case 'delete': {
+          const leaf = !workspace.pages.some(child => child.parentId === id)
+          if (leaf && pageTitle(page) === DEFAULT_PAGE_TITLE) {
+            const live = liveDocument(id)
+            const candidate = live ? { ...page, content: live.toJSON() } : page.content ? page : await loadPage(id)
+            if (candidate && !hasPageContent(candidate)) {
+              change(current => {
+                const latest = findPage(current, id)
+                if (!latest || pageTitle(latest) !== DEFAULT_PAGE_TITLE ||
+                    current.pages.some(child => child.parentId === id) ||
+                    hasPageContent(latest.content ? latest : { ...latest, content: candidate.content })) return current
+                return removePage(current, id, newPageIdentity())
+              })
+              return
+            }
+          }
+          break
+        }
       }
+    } catch {
+      setNotice('无法读取页面正文。')
+      if (action !== 'delete') return
     }
     setDialog({ kind: action, pageId: id })
   }
@@ -196,13 +232,16 @@ function Workspace({ workspace, anchor, saveFailed, change, reset, stageContent,
     void importFile(() => openMarkdownFile(() => markdownInput.current?.click()))
   }
 
-  async function exportPage(page: PageRecord, format: DocumentFileFormat) {
+  async function exportPage(page: WorkspacePage, format: DocumentFileFormat) {
     setToolsOpen(false)
     try {
       const name = pageTitle(page)
-      const doc = documentFor(page)
+      const live = liveDocument(page.id)
+      const body = live ? page : await loadPage(page.id)
+      if (!body) return
+      const doc = live ?? schema.nodeFromJSON(body.content)
       const contents = format === 'markdown' ? docToMarkdown(doc)
-        : JSON.stringify({ title: name, document: doc.toJSON(), comments: page.comments }, null, 2)
+        : JSON.stringify({ title: name, document: doc.toJSON(), comments: body.comments }, null, 2)
       await saveDocumentFile({ name, format, contents }, file => {
         const type = file.format === 'markdown' ? 'text/markdown;charset=utf-8' : 'application/json'
         downloadBlob(new Blob([file.contents], { type }), suggestedFileName(file.name, file.format))
@@ -226,10 +265,33 @@ function Workspace({ workspace, anchor, saveFailed, change, reset, stageContent,
 
   useEffect(() => getDesktopBridge()?.onMenuCommand(command => runMenuCommand(command)), [])
 
+  async function insertDetachedImages(id: string, images: readonly ImageAttributes[], position: number) {
+    const page = await loadPage(id)
+    if (!page) return
+    const binding = bindingRef.current
+    function insert(state: EditorState) {
+      const selection = Selection.near(state.doc.resolve(Math.min(position, state.doc.content.size)))
+      return insertImageBlocks(state, images, selection)
+    }
+    if (binding?.pageId === id && !binding.editor.isDestroyed && binding.editor.view.dom.isConnected) {
+      binding.editor.view.dispatch(insert(binding.editor.state))
+      return
+    }
+    change(workspace => {
+      const current = findPage(workspace, id)
+      if (!current) return workspace
+      const state = EditorState.create({ doc: schema.nodeFromJSON(current.content ?? page.content) })
+      return updatePage(workspace, id, { content: insert(state).doc.toJSON() }, Date.now())
+    })
+  }
+
   async function copyMarkdown() {
     clearTimeout(copyTimer.current)
     try {
-      await navigator.clipboard.writeText(docToMarkdown(documentFor(activePage)))
+      const live = liveDocument(activePage.id)
+      const body = live ? activePage : await loadPage(activePage.id)
+      if (!body) return
+      await navigator.clipboard.writeText(docToMarkdown(live ?? schema.nodeFromJSON(body.content)))
       setCopiedPageId(activePage.id)
       copyTimer.current = setTimeout(() => setCopiedPageId(null), 1500)
     } catch {
@@ -254,7 +316,7 @@ function Workspace({ workspace, anchor, saveFailed, change, reset, stageContent,
             </span>)}
           </div>}
           <input ref={titleInput} aria-label="文档标题" aria-current="page" value={activePage.title} placeholder={DEFAULT_PAGE_TITLE}
-            onChange={event => editPage(activePage.id, { title: event.target.value })} />
+            onChange={event => editPage(activePage.id, { title: event.target.value }, true)} />
         </nav>
         <div className="workspace-tools" role="group" aria-label="文档工具">
           <button type="button" className="icon-control" aria-label="页面侧栏" title="页面"
@@ -306,16 +368,30 @@ function Workspace({ workspace, anchor, saveFailed, change, reset, stageContent,
       <div className="workspace" data-navigation={navigationOpen} data-comments={commentsOpen}>
         <WorkspaceNavigation workspace={workspace} view={navigationView} open={navigationOpen} editor={editor}
           onView={selectNavigation} onClose={() => setNavigationOpen(false)} onActivate={openPage} onCreate={newPage}
-          onIcon={(id, icon) => editPage(id, { icon })} onAction={pageAction} />
-        <PageEditor key={activePage.id} page={activePage} extensions={extensions} anchor={anchor} commentsOpen={commentsOpen}
+          onIcon={(id, icon) => editPage(id, { icon })} onAction={(action, id) => void pageAction(action, id)} />
+        {loadedPage ? <PageEditor key={activePage.id} page={loadedPage} extensions={extensions} anchor={anchor} commentsOpen={commentsOpen}
           onCommentsOpen={showComments} onEditorReady={editorReady} onEdit={editPage} onStageContent={stageContent}
-          onImport={file => void chooseMarkdownFile(file)} />
+          onImport={file => void chooseMarkdownFile(file)} onDetachedImages={insertDetachedImages} onNotice={setNotice} />
+          : <main className="document-surface" aria-busy={!loadFailed}>
+            <div className="workspace-load" role="status">
+              {loadFailed ? <>无法读取页面正文。 <button type="button" onClick={retry}>重试</button></> : '正在加载页面…'}
+            </div>
+          </main>}
       </div>
+      {externalConflict && <div className="workspace-conflict" role="alert">
+        <span>{externalConflict.locked ? '工作区正被另一个写入方占用。' : '磁盘上的工作区已被外部修改，本地还有未保存的编辑。'}</span>
+        <button type="button" onClick={reloadExternal}>从磁盘重载</button>
+        <button type="button" onClick={keepLocal}>用本地覆盖保存</button>
+      </div>}
       {(notice || saveFailed) && <div className="workspace-notice" role="status">
-        {notice || '浏览器无法保存工作区。'}
+        {notice || (getDesktopBridge() ? '无法保存工作区。' : '浏览器无法保存工作区。')}
         {notice && <button type="button" className="icon-control" aria-label="关闭提示" onClick={() => setNotice('')}>
           <X size={15} aria-hidden="true" />
         </button>}
+      </div>}
+      {failedImages > 0 && <div className="workspace-notice image-save-notice" role="status">
+        有 {failedImages} 张图片尚未保存。图片暂存于当前会话，正文会独立保存。
+        <button type="button" onClick={() => void retryImageUploads()}>重试保存图片</button>
       </div>}
       {dialog && <WorkspaceDialog request={dialog} workspace={workspace} onClose={() => setDialog(null)} onConfirm={confirmDialog} />}
       <dialog ref={help} className="shortcut-dialog" aria-labelledby="shortcut-heading">
@@ -342,29 +418,11 @@ function Workspace({ workspace, anchor, saveFailed, change, reset, stageContent,
 
 function WorkspaceApp({ persistence, appearance }: { persistence?: WorkspacePersistence; appearance: Appearance }) {
   const store = useWorkspace(schema, persistence)
-  return <Workspace key={store.revision} {...store} appearance={appearance} />
-}
-
-function DesktopWorkspaceApp({ bridge, appearance }: { bridge: DesktopBridge; appearance: Appearance }) {
-  const [storage, setStorage] = useState<WorkspacePersistence | null>(null)
-  const [failed, setFailed] = useState(false)
-  const [attempt, setAttempt] = useState(0)
-
-  useEffect(() => {
-    let mounted = true
-    void openDesktopWorkspaceStorage(bridge).then(
-      next => { if (mounted) setStorage(next) },
-      () => { if (mounted) setFailed(true) },
-    )
-    return () => { mounted = false }
-  }, [bridge, attempt])
-
-  if (storage) return <WorkspaceApp persistence={storage} appearance={appearance} />
-  if (!failed) return null
-  return <div className="workspace-notice" role="status">
-    无法读取桌面工作区。
-    <button type="button" onClick={() => { setFailed(false); setAttempt(attempt + 1) }}>重试</button>
+  if (!store.workspace) return <div className="workspace-load" role="status">
+    {store.loadFailed ? <>{persistence ? '无法读取桌面工作区。' : '无法读取工作区。'}
+      <button type="button" onClick={store.retry}>重试</button></> : '正在加载工作区…'}
   </div>
+  return <Workspace key={store.revision} {...store} workspace={store.workspace} appearance={appearance} />
 }
 
 export default function App() {
@@ -378,5 +436,5 @@ export default function App() {
   }), [bridge])
 
   const appearance = { mode, setMode }
-  return bridge ? <DesktopWorkspaceApp bridge={bridge} appearance={appearance} /> : <WorkspaceApp appearance={appearance} />
+  return <WorkspaceApp persistence={bridge} appearance={appearance} />
 }

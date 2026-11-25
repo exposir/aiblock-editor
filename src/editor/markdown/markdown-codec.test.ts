@@ -161,6 +161,45 @@ const fence = "\`\`\`"
     expect(tasks.childCount).toBe(2)
   })
 
+  it('keeps tight-list inline marks and nested items together', () => {
+    const schema = editor('').schema
+    const source = '- **工程文件**： `build/icon.svg`（矢量源图） [文档](https://example.com/docs) $x^2$\n  - **子项**：`index.json`\n'
+    const assertFormatting = (doc: ProseMirrorNode) => {
+      const list = doc.firstChild!
+      expect(list.type.name).toBe('bulletList')
+      const item = list.firstChild!
+      expect(item.childCount).toBe(2)
+      const paragraph = item.firstChild!
+      expect(paragraph.type.name).toBe('paragraph')
+      expect(paragraph.textContent).toContain('工程文件')
+      expect(paragraph.textContent).toContain('build/icon.svg')
+      expect(paragraph.textContent).toContain('文档')
+      const texts: { text: string; marks: readonly string[] }[] = []
+      const math: string[] = []
+      doc.descendants(node => {
+        if (node.isText) texts.push({ text: node.textContent, marks: node.marks.map(mark => mark.type.name) })
+        if (node.type.name === 'inlineMath') math.push(String(node.attrs.latex))
+      })
+      expect(texts.find(node => node.text === '工程文件')?.marks).toContain('bold')
+      expect(texts.find(node => node.text === 'build/icon.svg')?.marks).toContain('code')
+      expect(texts.find(node => node.text === '文档')?.marks).toContain('link')
+      expect(math).toContain('x^2')
+      const nested = item.child(1)
+      expect(nested.type.name).toBe('bulletList')
+      expect(nested.firstChild?.firstChild?.type.name).toBe('paragraph')
+      expect(texts.find(node => node.text === '子项')?.marks).toContain('bold')
+      expect(texts.find(node => node.text === 'index.json')?.marks).toContain('code')
+    }
+    const parsed = markdownToDoc(schema, source)
+    assertFormatting(parsed)
+    const rendered = docToMarkdown(parsed)
+    expect(rendered).toContain('**工程文件**')
+    expect(rendered).toContain('`build/icon.svg`')
+    expect(rendered).toContain('[文档](https://example.com/docs)')
+    expect(rendered).toContain('$x^2$')
+    assertFormatting(markdownToDoc(schema, rendered))
+  })
+
   it('does not let literal internal tokens duplicate custom blocks', () => {
     const schema = editor('').schema
     const doc = markdownToDoc(schema, '> [!NOTE]\n> body\n\n%%CODEX-0%%\n')
@@ -228,5 +267,42 @@ Right
     }
     expect(docToMarkdown(parsed)).not.toContain('data-block-id')
     expect(docToMarkdown(parsed)).not.toContain('data-comment-id')
+  })
+})
+
+describe('block images in Markdown', () => {
+  // @partition source and layout: external URLs, asset aliases and HTML dimensions
+  it('keeps safe URLs and local asset IDs while preserving image blocks in mixed text', () => {
+    const id = 'a'.repeat(64) + '.png'
+    const source = 'Before ![figure](https://example.test/a.png?q=1&v=2) after.\n\n![local](lark-asset://media/' + id + ')'
+    const schema = editor('').schema
+    const doc = markdownToDoc(schema, source)
+    expect(doc.children.map(node => node.type.name)).toEqual(['paragraph', 'imageBlock', 'paragraph', 'imageBlock'])
+    expect(doc.child(1).attrs).toMatchObject({ src: 'https://example.test/a.png?q=1&v=2', alt: 'figure' })
+    expect(doc.child(3).attrs).toMatchObject({ assetId: id, src: null, alt: 'local' })
+    expect(markdownToDoc(schema, docToMarkdown(doc)).eq(doc)).toBe(true)
+  })
+
+  it('round trips intrinsic size, display size, alignment and alternative text', () => {
+    const source = '<img src="https://example.test/layout.png" alt="A &amp; B" width="1200" height="600" data-display-width="360" data-align="right">'
+    const schema = editor('').schema
+    const doc = markdownToDoc(schema, source)
+    expect(doc.firstChild?.attrs).toMatchObject({ alt: 'A & B', width: 1200, height: 600, align: 'right', displayWidth: 360 })
+    expect(markdownToDoc(schema, docToMarkdown(doc)).eq(doc)).toBe(true)
+  })
+
+  it('recognizes dangerous Markdown image labels as text without mounting unsafe image sources', () => {
+    const schema = editor('').schema
+    const doc = markdownToDoc(schema, '![blocked](javascript:alert(1))\n\n![also blocked](data:image/svg+xml,svg)')
+    expect(doc.children.every(node => node.type.name === 'paragraph')).toBe(true)
+    expect(doc.textContent).toContain('blocked')
+  })
+  it('keeps the safe external fallback of a local asset', () => {
+    const schema = editor('').schema
+    const id = 'b'.repeat(64) + '.webp'
+    const source = `<img src="asset:${id}" data-fallback-src="https://example.test/backup.webp" alt="备份">`
+    const doc = markdownToDoc(schema, source)
+    expect(doc.firstChild?.attrs).toMatchObject({ assetId: id, src: 'https://example.test/backup.webp' })
+    expect(markdownToDoc(schema, docToMarkdown(doc)).eq(doc)).toBe(true)
   })
 })

@@ -16,6 +16,8 @@ export async function renderGallery(page, until, theme) {
       return decodeURIComponent(image.src).toLowerCase().includes(ink)
     }, { selector, i, theme }), 'Mermaid preview ' + (i + 1) + ' did not render', 30000)
   }
+  await page(() => document.querySelector('.ProseMirror [data-inline-math]')?.scrollIntoView({ block: 'center' }))
+  await until(() => page(() => document.querySelectorAll('.ProseMirror .katex').length === 5), 'Gallery formulas did not render')
   const formulas = await page(() => ({
     count: document.querySelectorAll('.ProseMirror .katex').length,
     errors: document.querySelectorAll('.ProseMirror .katex-error, .ProseMirror .code-preview-error').length,

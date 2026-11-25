@@ -1,10 +1,12 @@
-import { mkdtemp, mkdir, readFile, readdir, rm, writeFile } from 'node:fs/promises'
+import { mkdtemp, mkdir, readFile, readdir, rm, stat, truncate, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import fc from 'fast-check'
 import { describe, expect, it, onTestFinished } from 'vitest'
 import { decideNavigation, developmentUrl, externalUrl, isAppDocument } from './security.js'
-import { createWorkspaceFile, isSaveFileOptions, readMarkdownFile, writeAtomicText } from './storage.js'
+import { assetRequestId, createImageAssetFiles, createWorkspaceFiles, isSaveFileOptions, readMarkdownFile, writeAtomicText } from './storage.js'
+import { testImage } from '../src/test/image-fixture.js'
+import { splitLegacyWorkspace } from '../src/workspace/workspace-format.js'
 import { parseWindowState, restoreWindowState } from './window-state.js'
 
 const primary = { x: 0, y: 24, width: 1440, height: 876 }
@@ -102,60 +104,112 @@ describe('desktop navigation policy', () => {
 async function profile() {
   const directory = await mkdtemp(join(tmpdir(), 'lark-editor-test-'))
   onTestFinished(() => rm(directory, { recursive: true, force: true }))
-  const path = join(directory, 'workspace.json')
-  const workspace = createWorkspaceFile(path)
-  return { directory, path, workspace }
+  return {
+    directory, legacyPath: join(directory, 'workspace.json'),
+    indexPath: join(directory, 'workspace', 'index.json'),
+    pagesPath: join(directory, 'workspace', 'pages'),
+    workspace: createWorkspaceFiles(directory),
+  }
 }
 
-const snapshot = (id: string) => JSON.stringify({ activePageId: id, pages: [{ id, title: '纸页' }] })
+const a = 'ec6db70c-08ab-426f-ad6b-fa341659b64a'
+const b = '861cf04e-ea85-41dc-af60-de823714fd21'
+const richContent = {
+  type: 'doc', content: [{ type: 'codeBlock', attrs: { language: 'mermaid', viewMode: 'split', blockId: 'keep' },
+    content: [{ type: 'text', text: 'graph TB\nA-->B' }] }],
+}
+const legacyPages = [a, b].map((id, order) => ({
+  id, title: `纸页 ${order}`, icon: '📄', parentId: order ? a : null, createdAt: 1, updatedAt: 2,
+  order, content: richContent,
+  comments: [{ id: 'review', quote: '原文', resolved: false, messages: [{ id: 'msg', author: '我', text: '保留' }] }],
+}))
+const legacy = JSON.stringify({ activePageId: b, pages: legacyPages, demoVersion: 2 })
+const seed = splitLegacyWorkspace(legacy)!
 
-describe('desktop files', () => {
-  // @partition persistence: atomic write, queue order, clear, invalid input and damaged data
-  // @partition documents: Markdown input and exact Markdown/JSON output
-  it('persists UTF-8 snapshots, replaces the previous file, and clears idempotently', async () => {
-    const { directory, path, workspace } = await profile()
-    expect(await workspace.load()).toBeNull()
-    await workspace.save(snapshot('older'))
-    await workspace.save(snapshot('newer'))
-    expect(await workspace.load()).toBe(snapshot('newer'))
-    expect(await readFile(path, 'utf8')).toBe(snapshot('newer'))
-    expect(await readdir(directory)).toEqual(['workspace.json'])
-    await workspace.clear()
-    await workspace.clear()
-    expect(await workspace.load()).toBeNull()
-    expect(await readdir(directory)).toEqual([])
+describe('desktop workspace and files', () => {
+  it('migrates UTF-8 legacy data into a metadata index and independent shards without loss', async () => {
+    const { legacyPath, indexPath, workspace, pagesPath, directory } = await profile()
+    expect(await workspace.readIndex()).toBeNull()
+    await writeFile(legacyPath, legacy)
+    await expect(workspace.readIndex()).resolves.toEqual(seed.index)
+    expect(JSON.parse(await readFile(indexPath, 'utf8'))).toEqual(seed.index)
+    expect(await readdir(pagesPath)).toEqual([b, a].map(id => `${id}.json`))
+    await expect(readFile(legacyPath)).rejects.toMatchObject({ code: 'ENOENT' })
+    const reopened = createWorkspaceFiles(directory)
+    await expect(reopened.readIndex()).resolves.toEqual(seed.index)
+    await expect(reopened.readPage(a)).resolves.toEqual(seed.pages[0])
+    await expect(reopened.readPage(b)).resolves.toEqual(seed.pages[1])
   })
 
-  it('serializes concurrent saves, reset and load in arrival order', async () => {
-    const { workspace } = await profile()
-    const changes = [workspace.save(snapshot('older')), workspace.clear(), workspace.save(snapshot('after-reset'))]
-    const visible = workspace.load()
-    await Promise.all(changes)
-    expect(await visible).toBe(snapshot('after-reset'))
+  it('orders concurrent commits and deletion and leaves the untouched shard byte-for-byte unchanged', async () => {
+    const { workspace, pagesPath, indexPath } = await profile()
+    await workspace.commit({ ...seed, removedPageIds: [] })
+    const bPath = join(pagesPath, `${b}.json`)
+    const bBefore = await readFile(bPath)
+    const changed = { ...seed.pages[0]!, updatedAt: 10, content: { type: 'doc', content: [{ type: 'paragraph' }] } }
+    const order = [workspace.commit({ pages: [changed], removedPageIds: [] }),
+      workspace.commit({ pages: [{ ...changed, updatedAt: 11 }], removedPageIds: [] })]
+    const visible = workspace.readPage(a)
+    await Promise.all(order)
+    await expect(visible).resolves.toMatchObject({ updatedAt: 11, content: changed.content })
+    expect(await readFile(bPath)).toEqual(bBefore)
+    expect(JSON.parse(await readFile(indexPath, 'utf8'))).toEqual(seed.index)
+    const index = { ...seed.index, activePageId: a, pages: [seed.index.pages[0]!] }
+    await workspace.commit({ index, pages: [], removedPageIds: [b] })
+    await expect(workspace.readPage(b)).resolves.toBeNull()
+    expect(await readdir(pagesPath)).toEqual([`${a}.json`])
   })
 
-  it.each(['{', 'null', '{"activePageId":"empty","pages":[]}'])('falls back for damaged data %s', async raw => {
-    const { path, workspace } = await profile()
-    await writeFile(path, raw)
-    expect(await workspace.load()).toBeNull()
-    expect(await readFile(path, 'utf8')).toBe(raw)
+  it('stores two thousands-of-block shards totaling more than 20 MiB', async () => {
+    const { workspace, pagesPath } = await profile()
+    const text = 'x'.repeat(3 * 1024)
+    const content = { type: 'doc', content: Array.from({ length: 4000 }, () => ({
+      type: 'paragraph', content: [{ type: 'text', text }],
+    })) }
+    const pages = seed.pages.map(page => ({ ...page, content }))
+    await workspace.commit({ ...seed, pages, removedPageIds: [] })
+    const sizes = await Promise.all([a, b].map(async id => (await stat(join(pagesPath, `${id}.json`))).size))
+    expect(sizes[0]! + sizes[1]!).toBeGreaterThan(20 * 1024 * 1024)
+    await expect(workspace.readIndex()).resolves.toEqual(seed.index)
+    const loaded = await workspace.readPage(b)
+    expect(loaded?.content.content).toHaveLength(4000)
+    expect(loaded?.content.content?.[3999]?.content?.[0]?.text).toBe(text)
   })
 
-  it('rejects invalid writes without overwriting the last valid workspace', async () => {
-    const { path, workspace } = await profile()
-    await workspace.save(snapshot('valid'))
-    await expect(workspace.save('{"pages":')).rejects.toThrow('Invalid workspace JSON')
-    expect(await readFile(path, 'utf8')).toBe(snapshot('valid'))
-    await workspace.save(snapshot('recovered'))
-    expect(await workspace.load()).toBe(snapshot('recovered'))
+  it.each(['{', 'null', '{"activePageId":"empty","pages":[]}'])('retains damaged legacy data %s for recovery', async raw => {
+    const { legacyPath, workspace } = await profile()
+    await writeFile(legacyPath, raw)
+    expect(await workspace.readIndex()).toBeNull()
+    expect(await readFile(legacyPath, 'utf8')).toBe(raw)
   })
 
-  it('preserves I/O failures as actionable errors and cleans up interrupted replacement files', async () => {
-    const { directory, path, workspace } = await profile()
-    await mkdir(path)
-    await expect(workspace.load()).rejects.toThrow()
-    await expect(workspace.save(snapshot('blocked'))).rejects.toThrow()
-    expect(await readdir(directory)).toEqual(['workspace.json'])
+  it('rejects path traversal, oversized shards and invalid batches while leaving other pages available', async () => {
+    const { workspace, indexPath, pagesPath } = await profile()
+    await workspace.commit({ ...seed, removedPageIds: [] })
+    await expect(workspace.readPage('../index')).rejects.toThrow('Invalid page ID')
+    await expect(workspace.readPage(a + '\n')).rejects.toThrow('Invalid page ID')
+    await expect(workspace.commit({ pages: [{ ...seed.pages[0], id: '../../workspace' }], removedPageIds: [] }))
+      .rejects.toThrow('Invalid workspace changes')
+    await expect(workspace.commit({ index: seed.index, pages: [], removedPageIds: [a] })).rejects.toThrow('Invalid workspace changes')
+    await truncate(join(pagesPath, `${b}.json`), 64 * 1024 * 1024 + 1)
+    await expect(workspace.readPage(b)).rejects.toThrow('size')
+    await expect(workspace.readIndex()).resolves.toEqual(seed.index)
+    await expect(workspace.readPage(a)).resolves.toEqual(seed.pages[0])
+    await writeFile(indexPath, '{')
+    await expect(workspace.readIndex()).rejects.toThrow(SyntaxError)
+    await expect(workspace.readPage(a)).resolves.toEqual(seed.pages[0])
+  })
+
+  it('reports I/O failures and preserves the legacy source if migration is interrupted', async () => {
+    const { legacyPath, indexPath, workspace, directory } = await profile()
+    await writeFile(legacyPath, legacy)
+    await mkdir(indexPath, { recursive: true })
+    await expect(workspace.readIndex()).rejects.toThrow()
+    await expect(workspace.commit({ ...seed, removedPageIds: [] })).rejects.toThrow()
+    expect(await readFile(legacyPath, 'utf8')).toBe(legacy)
+    expect(await readdir(join(directory, 'workspace'))).toEqual(['index.json', 'pages'])
+    await rm(indexPath, { recursive: true })
+    await expect(workspace.readIndex()).resolves.toEqual(seed.index)
   })
 
   it('reads selected Markdown files and saves Markdown and JSON in UTF-8', async () => {
@@ -176,5 +230,74 @@ describe('desktop files', () => {
     expect(isSaveFileOptions({ name: '图表', format: 'svg', contents: '<svg/>' })).toBe(true)
     expect(isSaveFileOptions({ name: '文档', format: 'exe', contents: '' })).toBe(false)
     expect(isSaveFileOptions({ name: '文档', format: 'markdown', contents: {} })).toBe(false)
+  })
+})
+
+describe('desktop image assets', () => {
+  it('deduplicates concurrent writes, serves original raster bytes and allows explicit offline cleanup', async () => {
+    const { directory } = await profile()
+    const assets = createImageAssetFiles(directory)
+    const image = testImage()
+    const [first, duplicate] = await Promise.all([assets.save(image), assets.save({ ...image, name: '副本.png' })])
+    expect(duplicate).toEqual(first)
+    expect(first).toMatchObject({ id: expect.stringMatching(/^[a-f0-9]{64}\.png$/), mime: 'image/png', width: 1, height: 1,
+      byteLength: image.bytes.byteLength, name: image.name })
+    expect(await readdir(join(directory, 'workspace', 'assets'))).toEqual([first.id, first.id + '.json'])
+    const url = `lark-asset://media/${first.id}`
+    const response = await assets.respond(new Request(url))
+    expect(response.status).toBe(200)
+    expect(response.headers.get('Content-Type')).toBe('image/png')
+    expect(response.headers.get('X-Content-Type-Options')).toBe('nosniff')
+    expect(new Uint8Array(await response.arrayBuffer())).toEqual(image.bytes)
+    expect(await assets.readMetadata([first.id, '0'.repeat(64) + '.png', first.id])).toEqual([first, null, first])
+    const head = await assets.respond(new Request(url, { method: 'HEAD' }))
+    expect(head.status).toBe(200)
+    expect(await head.text()).toBe('')
+    expect((await assets.respond(new Request(url, { method: 'POST' }))).status).toBe(405)
+    await assets.remove([first.id])
+    expect((await assets.respond(new Request(url))).status).toBe(404)
+  })
+
+  it('returns a readable raster with a matching application Origin and withholds CORS for foreign origins', async () => {
+    const { directory } = await profile()
+    const assets = createImageAssetFiles(directory)
+    const input = testImage()
+    const image = await assets.save(input)
+    const url = `lark-asset://media/${image.id}`
+    for (const [application, origin, allowed] of [
+      ['file:///Applications/Lark.app/dist/index.html', 'null', 'null'],
+      ['file:///Applications/Lark.app/dist/index.html', 'file://', 'file://'],
+      ['file:///Applications/Lark.app/dist/index.html', 'https://foreign.test', null],
+      ['http://127.0.0.1:58261/', 'http://127.0.0.1:58261', 'http://127.0.0.1:58261'],
+      ['http://127.0.0.1:58261/', 'http://127.0.0.1:58262', null],
+    ] as const) {
+      const response = await assets.respond(new Request(url, { headers: { Origin: origin } }), application)
+      expect(response.status).toBe(200)
+      expect(response.headers.get('Access-Control-Allow-Origin')).toBe(allowed)
+      expect(response.headers.get('Vary')).toBe('Origin')
+      expect(new Uint8Array(await response.arrayBuffer())).toEqual(input.bytes)
+    }
+  })
+
+  it('rejects invalid MIME, mismatched bytes, sizes, dimensions and protocol paths', async () => {
+    const { directory } = await profile()
+    const assets = createImageAssetFiles(directory)
+    const image = testImage()
+    for (const invalid of [
+      { ...image, mime: 'image/svg+xml' },
+      { ...image, mime: 'image/jpeg' },
+      { ...image, width: -1 },
+      { ...image, bytes: new Uint8Array(32 * 1024 * 1024 + 1) },
+    ]) await expect(assets.save(invalid)).rejects.toThrow('Invalid image')
+    await expect(assets.readMetadata(['../../index.json'])).rejects.toThrow('Invalid asset IDs')
+    await expect(assets.remove(['../../index.json'])).rejects.toThrow('Invalid asset IDs')
+    const id = '0'.repeat(64) + '.png'
+    const paths = [
+      `lark-asset://elsewhere/${id}`, `lark-asset://name@media/${id}`, `lark-asset://media:30/${id}`,
+      `lark-asset://media/%2e%2e%2f${id}`, `lark-asset://media/../${id}`, `lark-asset://media/${id}?q=1`,
+      `lark-asset://media/${id}#x`, `lark-asset://media/${id}\n`, `lark-asset://media/${id}.svg`,
+    ]
+    for (const url of paths) expect(assetRequestId(url)).toBeNull()
+    expect(decideNavigation(`lark-asset://media/${id}`, 'file:///app/index.html')).toEqual({ kind: 'deny' })
   })
 })

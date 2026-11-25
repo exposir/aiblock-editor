@@ -3,7 +3,7 @@ import type { Schema } from '@tiptap/pm/model'
 import { demoComments, demoDocument, demoTitle } from '../editor/demo-document'
 import { markdownToDoc } from '../editor/markdown/markdown-codec'
 import { activatePage, addPage, createWorkspace, findPage } from './page-store'
-import type { WorkspaceState } from './page-store'
+import type { PageRecord, WorkspacePage, WorkspaceState } from './page-store'
 
 const createdAt = Date.UTC(2026, 10, 24)
 export const DEMO_HANDBOOK_ID = '430e9296-6acb-4b74-84c3-a4bd05a20701'
@@ -435,14 +435,14 @@ R(p,t)=
 $$
 `
 
-function addDiagramGallery(schema: Schema, workspace: WorkspaceState): WorkspaceState {
+function addDiagramGallery<P extends WorkspacePage>(schema: Schema, workspace: WorkspaceState<P>): WorkspaceState<P | PageRecord> {
   const gallery = addPage(workspace, { id: galleryId, now: createdAt }, {
     title: galleryTitle, icon: '📊', content: markdownToDoc(schema, diagramGallery).toJSON(),
   })
   return { ...activatePage(gallery, workspace.activePageId), demoVersion }
 }
 
-export function upgradeDemoWorkspace(schema: Schema, workspace: WorkspaceState): WorkspaceState {
+export function upgradeDemoWorkspace<P extends WorkspacePage>(schema: Schema, workspace: WorkspaceState<P>): WorkspaceState<P | PageRecord> {
   if (workspace.demoVersion !== undefined ||
       ![DEMO_HANDBOOK_ID, checklistId, releaseId, notesId].every(id => findPage(workspace, id))) return workspace
   return addDiagramGallery(schema, workspace)

@@ -6,6 +6,9 @@ import { CommentSidebar } from '../components/CommentSidebar'
 import type { CommentThread } from '../editor/comments'
 import { BlockHandleOverlay } from '../editor/components/BlockHandleOverlay'
 import { BubbleToolbar } from '../editor/components/BubbleToolbar'
+import { ImageOverlay } from '../editor/components/ImageOverlay'
+import { pasteImageFiles, setImageTransferHost } from '../editor/extensions/image-block'
+import type { ImageAttributes } from '../editor/extensions/image-attributes'
 import { InlineMathOverlay } from '../editor/components/InlineMathOverlay'
 import { CodeBlockOverlay } from '../editor/components/CodeBlockOverlay'
 import { TableControlsOverlay } from '../editor/components/TableControlsOverlay'
@@ -27,6 +30,8 @@ interface PageEditorProps {
   readonly onEdit: EditPage
   readonly onStageContent: (id: string, read: () => JSONContent) => void
   readonly onImport: (file: File) => void
+  readonly onDetachedImages?: (pageId: string, images: readonly ImageAttributes[], pos: number) => Promise<void>
+  readonly onNotice?: (notice: string) => void
 }
 
 function commentId() {
@@ -37,9 +42,10 @@ function hasFilePayload(data: DataTransfer) {
   return data.types.includes('Files') || [...data.items].some(item => item.kind === 'file')
 }
 
-export function PageEditor({ page, extensions, anchor, commentsOpen, onCommentsOpen, onEditorReady, onEdit, onStageContent, onImport }: PageEditorProps) {
+export function PageEditor({ page, extensions, anchor, commentsOpen, onCommentsOpen, onEditorReady, onEdit, onStageContent, onImport, onDetachedImages, onNotice }: PageEditorProps) {
   const surface = useRef<HTMLElement>(null)
   const initialContent = useRef(page.content)
+  const normalizedOnMount = useRef(false)
   const cancelCommentReveal = useRef<(() => void) | undefined>(undefined)
   const [overlayHost, setOverlayHost] = useState<HTMLDivElement | null>(null)
   const [activeComment, setActiveComment] = useState<string | null>(null)
@@ -50,10 +56,16 @@ export function PageEditor({ page, extensions, anchor, commentsOpen, onCommentsO
     editorProps: {
       attributes: { class: 'document-editor', 'aria-label': '文档正文', role: 'textbox', 'aria-multiline': 'true' },
     },
+    onTransaction: ({ editor, transaction, appendedTransactions }) => {
+      if (!editor.isInitialized && (transaction.docChanged || appendedTransactions.some(tr => tr.docChanged))) {
+        normalizedOnMount.current = true
+      }
+    },
     onCreate: ({ editor }) => {
       if (!surface.current?.contains(editor.view.dom)) return
       editor.commands.clearRetiredComments()
-      if (!editor.state.doc.eq(editor.schema.nodeFromJSON(initialContent.current))) {
+      if (normalizedOnMount.current) {
+        normalizedOnMount.current = false
         onStageContent(page.id, () => editor.getJSON())
       }
     },
@@ -72,6 +84,16 @@ export function PageEditor({ page, extensions, anchor, commentsOpen, onCommentsO
   useLayoutEffect(() => {
     if (editor) onEditorReady(page.id, editor)
   }, [editor, onEditorReady, page.id])
+
+  useLayoutEffect(() => {
+    if (!editor) return
+    return setImageTransferHost(editor.view, {
+      pageId: page.id,
+      attached: () => !!surface.current?.contains(editor.view.dom),
+      detached: (images, pos) => onDetachedImages?.(page.id, images, pos) ?? Promise.resolve(),
+      notice: text => onNotice?.(text),
+    })
+  }, [editor, onDetachedImages, onNotice, page.id])
 
   useEffect(() => {
     if (editor && anchor) return revealBlock(editor, anchor.id)
@@ -136,6 +158,9 @@ export function PageEditor({ page, extensions, anchor, commentsOpen, onCommentsO
           event.stopPropagation()
           const file = files.find(isMarkdownFile)
           if (file) onImport(file)
+          else if (editor && !(event.target instanceof Node && editor.view.dom.contains(event.target))) {
+            pasteImageFiles(editor.view, files)
+          }
         }}>
         {dragDepth > 0 && <div className="markdown-drop-hint" aria-hidden="true">拖放 Markdown 文件以新建页面</div>}
         <EditorContent editor={editor}>
@@ -152,6 +177,7 @@ export function PageEditor({ page, extensions, anchor, commentsOpen, onCommentsO
             blockHash={id => formatPageHash(page.id, id)} onQuickInsert={openSlashMenu} />
           <TableControlsOverlay editor={editor} host={overlayHost} />
           <CodeBlockOverlay editor={editor} host={overlayHost} />
+          <ImageOverlay editor={editor} host={overlayHost} />
         </>}
       </>}
     </>

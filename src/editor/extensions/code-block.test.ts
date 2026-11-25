@@ -1,5 +1,5 @@
 import { Editor } from '@tiptap/core'
-import { describe, expect, it, onTestFinished } from 'vitest'
+import { describe, expect, it, onTestFinished, vi } from 'vitest'
 import { CODE_LANGUAGES, codeHighlightKey, highlightCode } from './code-block'
 import { docToMarkdown, markdownToDoc } from '../markdown/markdown-codec'
 import { createEditorExtensions } from './index'
@@ -50,4 +50,81 @@ describe('code block', () => {
     expect(codeHighlightKey.getState(editor.state)?.find()).toEqual([])
     expect(editor.state.doc.lastChild?.textContent).toBe('const x = 1')
   })
+})
+
+describe('deferred large code highlighting', () => {
+  // @partition transactional: no synchronous highlight; worker replies must match the current node
+  it('keeps a 2,500-line edit immediately editable and drops the earlier worker reply', async () => {
+    vi.useFakeTimers()
+    const replies: { send(tokens: unknown): void }[] = []
+    class WorkerBoundary {
+      onmessage?: (event: { data: unknown }) => void
+      terminate() {}
+      postMessage() { replies.push({ send: data => this.onmessage?.({ data }) }) }
+    }
+    vi.stubGlobal('Worker', WorkerBoundary)
+    const script = Array.from({ length: 2500 }, (_, index) => 'const revision' + index + ' = 1;').join('\n')
+    const current = new Editor({
+      extensions: createEditorExtensions(),
+      content: { type: 'doc', content: [{ type: 'codeBlock', attrs: { language: 'typescript' },
+        content: [{ type: 'text', text: script }] }] },
+    })
+    try {
+      await vi.advanceTimersByTimeAsync(140)
+      expect(replies).toHaveLength(1)
+      const start = process.hrtime.bigint()
+      current.view.dispatch(current.state.tr.insertText('a', 3))
+      expect(Number(process.hrtime.bigint() - start) / 1e6).toBeLessThan(100)
+      expect(current.state.doc.textContent).toMatch(/^coanst/)
+      replies[0]!.send([{ from: 0, to: 5, className: 'hljs-keyword' }])
+      await vi.advanceTimersByTimeAsync(200)
+      expect(codeHighlightKey.getState(current.state)?.find()).toHaveLength(0)
+      expect(replies).toHaveLength(2)
+      replies[1]!.send([{ from: 9, to: 17, className: 'hljs-title' }])
+      await vi.advanceTimersByTimeAsync(0)
+      expect(codeHighlightKey.getState(current.state)?.find().map(token => [token.from, token.to])).toEqual([[10, 18]])
+    } finally {
+      current.destroy()
+      vi.unstubAllGlobals()
+      vi.useRealTimers()
+    }
+  })
+})
+
+it('recovers a timed-out worker for a fresh edit without repeatedly retrying the same node', async () => {
+  vi.useFakeTimers()
+  const replies: Array<{ answer(): void; terminated: boolean }> = []
+  class WorkerBoundary {
+    onmessage?: (event: { data: unknown }) => void
+    terminated = false
+    terminate() { this.terminated = true }
+    postMessage() {
+      const worker = this
+      replies.push({
+        get terminated() { return worker.terminated },
+        answer() { worker.onmessage?.({ data: [{ from: 0, to: 5, className: 'hljs-keyword' }] }) },
+      })
+    }
+  }
+  vi.stubGlobal('Worker', WorkerBoundary)
+  const text = 'const value = 1\n'.repeat(2500)
+  const editor = editorWithCode('<pre data-language="typescript"><code>' + text + '</code></pre>')
+  try {
+    await vi.advanceTimersByTimeAsync(140)
+    expect(replies).toHaveLength(1)
+    await vi.advanceTimersByTimeAsync(5200)
+    expect(replies).toHaveLength(1)
+    expect(replies[0]?.terminated).toBe(true)
+    expect(codeHighlightKey.getState(editor.state)?.find()).toHaveLength(0)
+    editor.view.dispatch(editor.state.tr.insertText('x', 8))
+    await vi.advanceTimersByTimeAsync(140)
+    expect(replies).toHaveLength(2)
+    replies[1]?.answer()
+    await vi.advanceTimersByTimeAsync(0)
+    expect(codeHighlightKey.getState(editor.state)?.find()).toHaveLength(1)
+  } finally {
+    editor.destroy()
+    vi.unstubAllGlobals()
+    vi.useRealTimers()
+  }
 })

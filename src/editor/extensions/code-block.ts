@@ -1,47 +1,19 @@
-import { CodeBlock as BaseCodeBlock } from '@tiptap/extension-code-block'
 import type { Node as ProseMirrorNode } from '@tiptap/pm/model'
 import { NodeSelection, Plugin, PluginKey, TextSelection } from '@tiptap/pm/state'
 import { Decoration, DecorationSet } from '@tiptap/pm/view'
-import { common, createLowlight } from 'lowlight'
 import { codeNodeView } from '../preview/code-node-view'
 import { codeLanguage, isPreviewLanguage, viewModeFor } from './code-languages'
 import type { CodeLanguage, CodeViewMode } from './code-languages'
-import { createNodeIndex, textEdits } from './document-changes'
+import { changedNodes, createNodeIndex, textEdits } from './document-changes'
+import { highlightCode } from './code-syntax'
+import type { CodeToken } from './code-syntax'
+import { codeHighlightWorker, isLongCode, windowOfTokens } from './long-code-highlight'
+import { CodeBlockSchema } from '../schema/code-block'
+
+export { highlightCode } from './code-syntax'
 
 export { CODE_LANGUAGES, codeLanguage } from './code-languages'
 export type { CodeLanguage } from './code-languages'
-
-const highlighter = createLowlight(common)
-
-export interface CodeToken {
-  readonly from: number
-  readonly to: number
-  readonly className: string
-}
-
-export function highlightCode(language: unknown, text: string): CodeToken[] {
-  const grammar = codeLanguage(language)
-  if (grammar === 'plaintext' || isPreviewLanguage(grammar) || !text) return []
-
-  const root = highlighter.highlight(grammar === 'html' ? 'xml' : grammar, text)
-  const tokens: CodeToken[] = []
-  let offset = 0
-
-  function visit(node: (typeof root.children)[number], classes: readonly string[]) {
-    if (node.type === 'text') {
-      const from = offset
-      offset += node.value.length
-      if (classes.length && offset > from) tokens.push({ from, to: offset, className: classes.join(' ') })
-    } else if (node.type === 'element') {
-      const own = node.properties.className
-      const next = Array.isArray(own) ? [...classes, ...own.filter(value => typeof value === 'string')] : classes
-      for (const child of node.children) visit(child, next)
-    }
-  }
-
-  for (const child of root.children) visit(child, [])
-  return tokens
-}
 
 export const codeHighlightKey = new PluginKey<DecorationSet>('codeHighlight')
 
@@ -53,31 +25,7 @@ declare module '@tiptap/core' {
   }
 }
 
-export const CodeBlock = BaseCodeBlock.extend({
-  addAttributes() {
-    return {
-      ...this.parent?.(),
-      language: {
-        default: 'plaintext',
-        parseHTML: element => codeLanguage(element.getAttribute('data-language') ??
-          [...(element.firstElementChild?.classList ?? [])].find(name => name.startsWith('language-'))?.slice(9)),
-        renderHTML: attrs => ({ 'data-language': codeLanguage(attrs.language) }),
-      },
-      viewMode: {
-        default: 'preview',
-        parseHTML: element => viewModeFor('mermaid', element.getAttribute('data-view-mode')),
-        renderHTML: attrs => isPreviewLanguage(codeLanguage(attrs.language))
-          ? { 'data-view-mode': viewModeFor(codeLanguage(attrs.language), attrs.viewMode) }
-          : {},
-      },
-      wrap: {
-        default: false,
-        parseHTML: element => element.getAttribute('data-wrap') === 'true',
-        renderHTML: attrs => ({ 'data-wrap': String(attrs.wrap === true) }),
-      },
-    }
-  },
-
+export const CodeBlock = CodeBlockSchema.extend({
   addCommands() {
     return {
       ...this.parent?.(),
@@ -110,18 +58,27 @@ export const CodeBlock = BaseCodeBlock.extend({
     const cache = new WeakMap<ProseMirrorNode, readonly CodeToken[]>()
     const codes = createNodeIndex(node => node.type === type)
 
+    function asDecorations(tokens: readonly CodeToken[], pos: number) {
+      return tokens.map(token =>
+        Decoration.inline(pos + 1 + token.from, pos + 1 + token.to, { class: token.className }))
+    }
+
     function decorationsAt(node: ProseMirrorNode, pos: number) {
+      if (isLongCode(node)) return []
       let tokens = cache.get(node)
       if (!tokens) {
         tokens = highlightCode(node.attrs.language, node.textContent)
         cache.set(node, tokens)
       }
-      return tokens.map(token =>
-        Decoration.inline(pos + 1 + token.from, pos + 1 + token.to, { class: token.className }))
+      return asDecorations(tokens, pos)
     }
 
     function decorate(doc: ProseMirrorNode) {
       return DecorationSet.create(doc, codes(doc).flatMap(({ node, pos }) => decorationsAt(node, pos)))
+    }
+
+    function removeBlock(set: DecorationSet, node: ProseMirrorNode, pos: number) {
+      return set.remove(set.find(pos + 1, pos + node.nodeSize - 1))
     }
 
     return [
@@ -139,18 +96,96 @@ export const CodeBlock = BaseCodeBlock.extend({
         state: {
           init: (_, state) => decorate(state.doc),
           apply(tr, previous) {
-            if (!tr.docChanged && !tr.getMeta(codeHighlightKey)) return previous
-            if (editor.isInitialized && editor.view.composing) return previous.map(tr.mapping, tr.doc)
-            const edits = tr.getMeta(codeHighlightKey) ? null : textEdits(tr)
-            if (!edits) return decorate(tr.doc)
-            let next = previous.map(tr.mapping, tr.doc)
-            for (const { node, pos } of edits) {
-              if (node.type !== type) continue
-              next = next.remove(next.find(pos + 1, pos + node.nodeSize - 1))
-                .add(tr.doc, decorationsAt(node, pos))
+            const request = tr.getMeta(codeHighlightKey) as true | { node: ProseMirrorNode; pos: number; tokens: readonly CodeToken[] } | undefined
+            if (!tr.docChanged && !request) return previous
+            if (request === true) return decorate(tr.doc)
+            if (request && tr.doc.nodeAt(request.pos) === request.node) {
+              return removeBlock(previous, request.node, request.pos).add(tr.doc, asDecorations(request.tokens, request.pos))
             }
+            let next = previous.map(tr.mapping, tr.doc)
+            if (editor.isInitialized && editor.view.composing) return next
+            const edits = textEdits(tr)
+            function update(node: ProseMirrorNode, pos: number) {
+              if (node.type === type) next = removeBlock(next, node, pos).add(tr.doc, decorationsAt(node, pos))
+            }
+            if (edits) for (const { node, pos } of edits) update(node, pos)
+            else changedNodes(tr.before, tr.doc, update)
             return next
           },
+        },
+        view(view) {
+          const owner = view.dom.ownerDocument
+          const win = owner.defaultView
+          const highlights = new WeakMap<ProseMirrorNode, readonly CodeToken[]>()
+          const applied = new WeakMap<ProseMirrorNode, { from: number; to: number }>()
+          const worker = codeHighlightWorker()
+          let timer: ReturnType<typeof setTimeout> | undefined
+          let running = false
+          const failed = new WeakSet<ProseMirrorNode>()
+          let long = false
+          let closed = false
+
+          function schedule() {
+            clearTimeout(timer)
+            timer = setTimeout(render, 140)
+          }
+
+          function apply(node: ProseMirrorNode, pos: number, tokens: readonly CodeToken[], offset: number) {
+            const window = windowOfTokens(tokens, offset, applied.get(node))
+            if (!window) return
+            applied.set(node, window)
+            view.dispatch(view.state.tr.setMeta(codeHighlightKey, { node, pos, tokens: tokens.slice(window.from, window.to) })
+              .setMeta('addToHistory', false))
+          }
+
+          function render() {
+            if (closed || view.composing) return
+            const { doc, selection } = view.state
+            const blocks = codes(doc).filter(({ node }) => isLongCode(node))
+            long = !!blocks.length
+            for (const { node, pos } of blocks) {
+              const dom = view.nodeDOM(pos)
+              if (!(dom instanceof HTMLElement)) continue
+              const rect = dom.getBoundingClientRect()
+              const editing = selection.head > pos && selection.head < pos + node.nodeSize
+              const height = win?.innerHeight ?? 0
+              if (!editing && (rect.bottom < -300 || rect.top > height + 300)) continue
+              const viewport = rect.top < 0 && rect.bottom > 0 && typeof owner.elementFromPoint === 'function'
+                ? view.posAtCoords({ left: Math.max(rect.left + 22, 0), top: Math.min(rect.bottom - 1, 80) })?.pos
+                : undefined
+              const offset = viewport !== undefined && viewport > pos && viewport < pos + node.nodeSize
+                ? viewport - pos - 1 : editing ? selection.head - pos - 1 : 0
+              const cached = highlights.get(node)
+              if (cached) {
+                apply(node, pos, cached, offset)
+              } else if (!running && !failed.has(node)) {
+                running = true
+                void worker.color(node.attrs.language, node.textContent).then(tokens => {
+                  if (closed) return
+                  highlights.set(node, tokens)
+                  if (view.state.doc.nodeAt(pos) === node && !view.composing) apply(node, pos, tokens, offset)
+                }).catch(() => { failed.add(node) }).finally(() => {
+                  running = false
+                  if (!closed) schedule()
+                })
+              }
+            }
+          }
+
+          const onScroll = () => { if (long) schedule() }
+          win?.addEventListener('scroll', onScroll, { passive: true })
+          schedule()
+          return {
+            update(_view, previous) {
+              if (previous.doc !== view.state.doc || !previous.selection.eq(view.state.selection)) schedule()
+            },
+            destroy() {
+              closed = true
+              clearTimeout(timer)
+              win?.removeEventListener('scroll', onScroll)
+              worker.destroy()
+            },
+          }
         },
         props: {
           decorations: state => codeHighlightKey.getState(state),

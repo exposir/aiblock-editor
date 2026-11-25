@@ -1,6 +1,7 @@
 import { useLayoutEffect, useRef, useState } from 'react'
 import { findPage, pageAncestors, pageSubtree, pageTitle } from './page-store'
 import type { WorkspaceState } from './page-store'
+import type { PageMetadata } from './workspace-format'
 
 export type WorkspaceDialogRequest = { kind: 'reset' } | { kind: 'rename' | 'move' | 'delete'; pageId: string }
 
@@ -8,7 +9,7 @@ const titles = { rename: '重命名页面', move: '移动页面', delete: '删�
 
 export function WorkspaceDialog({ request, workspace, onClose, onConfirm }: {
   request: WorkspaceDialogRequest
-  workspace: WorkspaceState
+  workspace: WorkspaceState<PageMetadata>
   onClose: () => void
   onConfirm: (value: string) => void
 }) {

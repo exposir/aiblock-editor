@@ -1,13 +1,14 @@
 import { getSchema } from '@tiptap/core'
 import fc from 'fast-check'
-import { beforeEach, describe, expect, it } from 'vitest'
+import { describe, expect, it } from 'vitest'
 import { createEditorExtensions } from '../editor/extensions'
 import { createDemoWorkspace } from './demo-workspace'
 import {
-  DEFAULT_PAGE_TITLE, WORKSPACE_STORAGE_KEY, activatePage, addPage, clearWorkspace, copyPage,
-  createWorkspace, formatPageHash, hasPageContent, importMarkdownPage, loadWorkspace, movePage, pageAncestors,
-  parseLegacyBlockHash, parsePageHash, removePage, saveWorkspace, updatePage,
+  DEFAULT_PAGE_TITLE, activatePage, addPage, checkedPageContent, copyPage,
+  createWorkspace, formatPageHash, hasPageContent, importMarkdownPage, movePage, pageAncestors,
+  parseLegacyBlockHash, parsePageHash, removePage, updatePage,
 } from './page-store'
+import { isWorkspaceIndex, pageMetadata, splitLegacyWorkspace } from './workspace-format'
 
 const schema = getSchema(createEditorExtensions())
 const identity = (index: number) => ({ id: `3a32ec65-f076-4830-8110-${String(index).padStart(12, '0')}`, now: index })
@@ -149,37 +150,30 @@ describe('浏览器存储与页面地址', () => {
    * @partition hash: 激活页与可选块锚点
    * @partition invariant: 操作序列保持非空、可达、无环
    */
-  beforeEach(() => clearWorkspace(localStorage))
-
   it('storage: 恢复最后激活页、正文属性和全部评论', () => {
     const demo = createDemoWorkspace(schema)
     expect(demo.pages.map(page => page.title)).toEqual([
       '文档协作与发布手册', '试点验收清单', '接口与发布规则', '架构设计备忘', '全图种与公式复杂示例',
     ])
     const workspace = activatePage(demo, demo.pages[1]!.id)
-    expect(saveWorkspace(localStorage, workspace)).toBe(true)
-    expect(loadWorkspace(localStorage, schema, () => createWorkspace(identity(1)))).toEqual(workspace)
+    const migrated = splitLegacyWorkspace(JSON.stringify(workspace))!
+    expect(migrated.index).toMatchObject({ version: 2, activePageId: workspace.activePageId, demoVersion: workspace.demoVersion })
+    expect(migrated.index.pages).toEqual(workspace.pages.map(pageMetadata))
+    expect(migrated.pages.map(page => checkedPageContent(schema, page, page.id).content))
+      .toEqual(workspace.pages.map(page => page.content))
   })
 
-  it('invalid: 缺失、畸形 JSON、空树、孤儿、环、无效正文回退示例', () => {
-    const fallback = createDemoWorkspace(schema)
-    expect(loadWorkspace(localStorage, schema, () => fallback)).toBe(fallback)
-    for (const value of invalidWorkspacePayloads()) {
-      localStorage.setItem(WORKSPACE_STORAGE_KEY, value)
-      expect(loadWorkspace(localStorage, schema, () => fallback)).toBe(fallback)
+  it('invalid: 拒绝损坏树和索引正文，仅在加载对应分片时拒绝无效正文', () => {
+    for (const raw of invalidWorkspacePayloads()) {
+      const migrated = splitLegacyWorkspace(raw)
+      if (migrated) {
+        expect(() => checkedPageContent(schema, migrated.pages[1], child)).toThrow()
+      } else {
+        expect(migrated).toBeNull()
+      }
     }
-  })
-
-  it('clear: 重置清除工作区数据并保留同源其他数据', () => {
-    saveWorkspace(localStorage, twoPages())
-    localStorage.setItem('other-setting', 'keep')
-    try {
-      clearWorkspace(localStorage)
-      expect(localStorage.getItem(WORKSPACE_STORAGE_KEY)).toBeNull()
-      expect(localStorage.getItem('other-setting')).toBe('keep')
-    } finally {
-      localStorage.removeItem('other-setting')
-    }
+    const { index } = splitLegacyWorkspace(JSON.stringify(twoPages()))!
+    expect(isWorkspaceIndex({ ...index, pages: [{ ...index.pages[0], content }, index.pages[1]] })).toBe(false)
   })
 
   it('hash: 编解码页地址及含特殊字符的块锚点', () => {

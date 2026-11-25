@@ -1,4 +1,6 @@
 import { themeModes } from '../theme/theme.js'
+import type { ImageAssetInput, ImageAssetMetadata } from '../workspace/asset-format.js'
+import type { WorkspaceExternalChange, WorkspacePersistence } from '../workspace/workspace-format.js'
 import type { ThemeMode } from '../theme/theme.js'
 
 export type DesktopPlatform = 'darwin' | 'win32' | 'linux'
@@ -24,9 +26,11 @@ export const menuCommands = [
 export type DesktopMenuCommand = typeof menuCommands[number]
 
 export const desktopChannels = {
-  loadWorkspace: 'workspace:load',
-  saveWorkspace: 'workspace:save',
-  clearWorkspace: 'workspace:clear',
+  readIndex: 'workspace:read-index',
+  readPage: 'workspace:read-page',
+  commit: 'workspace:commit',
+  saveImageAsset: 'asset:save-image',
+  readImageAssets: 'asset:read-images',
   openMarkdownFile: 'file:open-markdown',
   saveFile: 'file:save',
   menuCommand: 'menu:command',
@@ -34,19 +38,19 @@ export const desktopChannels = {
   setTheme: 'theme:set',
   flushWorkspace: 'workspace:flush',
   workspaceFlushed: 'workspace:flushed',
+  externalChange: 'workspace:external-change',
 } as const
 
-export interface DesktopBridge {
+export interface DesktopBridge extends WorkspacePersistence {
   readonly platform: DesktopPlatform
   readonly initialTheme?: ThemeMode
   setTheme(mode: ThemeMode): Promise<void>
-  loadWorkspace(): Promise<string | null>
-  saveWorkspace(raw: string): Promise<void>
-  clearWorkspace(): Promise<void>
+  saveImageAsset(input: ImageAssetInput): Promise<ImageAssetMetadata>
+  readImageAssets(ids: string[]): Promise<(ImageAssetMetadata | null)[]>
   openMarkdownFile(): Promise<MarkdownFile | null>
   saveFile(options: SaveFileOptions): Promise<boolean>
   onMenuCommand(listener: (command: DesktopMenuCommand) => void): () => void
-  onClosing?(listener: () => void | Promise<void>): () => void
+  onExternalChange?(listener: (change: WorkspaceExternalChange) => void): () => void
 }
 
 declare global {
@@ -61,38 +65,6 @@ export function getDesktopBridge(): DesktopBridge | undefined {
 
 export function applyDesktopPlatform(root: HTMLElement, bridge = getDesktopBridge()): void {
   if (bridge) root.dataset.desktopPlatform = bridge.platform
-}
-
-export interface WorkspacePersistence {
-  read(): string | null
-  write(raw: string): boolean | Promise<void>
-  clear(): void
-  onClosing?(listener: () => void | Promise<void>): () => void
-}
-
-export function browserWorkspaceStorage(storage: Storage | null, key: string): WorkspacePersistence {
-  return {
-    read() {
-      try { return storage?.getItem(key) ?? null } catch { return null }
-    },
-    write(raw) {
-      if (!storage) return false
-      try { storage.setItem(key, raw); return true } catch { return false }
-    },
-    clear() {
-      try { storage?.removeItem(key) } catch { /* The next save still attempts to persist the workspace. */ }
-    },
-  }
-}
-
-export async function openDesktopWorkspaceStorage(bridge: DesktopBridge): Promise<WorkspacePersistence> {
-  const raw = await bridge.loadWorkspace()
-  return {
-    read: () => raw,
-    write: contents => bridge.saveWorkspace(contents),
-    clear: () => { void bridge.clearWorkspace().catch(() => {}) },
-    onClosing: bridge.onClosing?.bind(bridge),
-  }
 }
 
 export async function openMarkdownFile(openBrowserPicker: () => void, bridge = getDesktopBridge()): Promise<MarkdownFile | null> {

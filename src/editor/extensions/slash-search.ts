@@ -25,6 +25,7 @@ export const SLASH_ITEMS = [
   { id: 'table', label: '表格', group: '高级块', english: 'Table', keywords: ['grid'] },
   { id: 'mermaid', label: '流程图 / 图表', group: '高级块', english: 'Mermaid', keywords: ['流程图', '图表', 'lct', 'tb', 'liuchengtu', 'diagram', 'flowchart'] },
   { id: 'math', label: '数学公式', group: '高级块', english: 'LaTeX', keywords: ['math', 'latex', '公式', 'gs', 'gongshi'] },
+  { id: 'imageBlock', label: '图片', group: '高级块', english: 'Image', keywords: ['图片', 'tupian', '照片', 'photo'] },
   { id: 'codeBlock', label: '代码块', group: '高级块', english: 'Code block', keywords: ['代码', 'code'] },
 ] as const satisfies readonly SlashItem[]
 

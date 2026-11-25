@@ -1,34 +1,13 @@
-import { InputRule, Node, mergeAttributes } from '@tiptap/core'
+import { InputRule } from '@tiptap/core'
 import { NodeSelection, Plugin, PluginKey } from '@tiptap/pm/state'
-import { findInlineMath, inlineMathMarkdown } from '../preview/math-markup'
+import { findInlineMath } from '../preview/math-markup'
+import { observeViewport } from '../components/viewport'
 import { renderMath } from '../preview/math'
+import { InlineMathSchema } from '../schema/inline-math'
 
 export const inlineMathEditKey = new PluginKey<number | null>('inlineMathEdit')
 
-export const InlineMath = Node.create({
-  name: 'inlineMath',
-  group: 'inline',
-  inline: true,
-  atom: true,
-
-  addAttributes() {
-    return {
-      latex: {
-        default: '',
-        parseHTML: element => element.getAttribute('data-latex') ?? '',
-        renderHTML: attrs => ({ 'data-latex': attrs.latex }),
-      },
-    }
-  },
-
-  parseHTML() { return [{ tag: 'span[data-inline-math]' }] },
-
-  renderHTML({ node, HTMLAttributes }) {
-    return ['span', mergeAttributes(HTMLAttributes, { 'data-inline-math': '', contenteditable: 'false' }), String(node.attrs.latex)]
-  },
-
-  renderText({ node }) { return inlineMathMarkdown(String(node.attrs.latex)) },
-
+export const InlineMath = InlineMathSchema.extend({
   addNodeView() {
     const { type } = this
     return ({ node, view }) => {
@@ -37,30 +16,46 @@ export const InlineMath = Node.create({
       dom.dataset.inlineMath = ''
       dom.contentEditable = 'false'
       let revision = 0
-      let source: string | undefined
-      function show(latex: string) {
-        if (source === latex) return
-        source = latex
-        const current = ++revision
-        dom.dataset.latex = latex
-        dom.textContent = latex
+      let source = String(node.attrs.latex)
+      let near = false
+      let rendered = false
+      function placeholder() {
+        dom.dataset.latex = source
+        dom.textContent = source
         dom.classList.remove('code-preview-error')
-        void renderMath(latex, false).then(markup => {
-          if (current !== revision) return
+      }
+      function draw() {
+        if (!near || rendered) return
+        const current = ++revision
+        void renderMath(source, false).then(markup => {
+          if (current !== revision || !near) return
+          rendered = true
           if (markup) dom.innerHTML = markup
           else dom.classList.add('code-preview-error')
         })
       }
-      show(String(node.attrs.latex))
+      placeholder()
+      const stop = observeViewport(dom, 300, visible => {
+        near = visible
+        if (near) draw()
+        else revision++
+      })
       return {
         dom,
         update(next) {
           if (next.type !== type) return false
-          show(String(next.attrs.latex))
+          const latex = String(next.attrs.latex)
+          if (latex !== source) {
+            revision++
+            source = latex
+            rendered = false
+            placeholder()
+            draw()
+          }
           return true
         },
         ignoreMutation: () => true,
-        destroy() { revision++ },
+        destroy() { revision++; stop() },
       }
     }
   },

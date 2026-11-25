@@ -222,7 +222,7 @@ try {
   await renderGallery(page, until)
   const checks = {}
   const preview = '[data-preview-language="mermaid"] img'
-  const toolbar = ':nth-child(2 of .code-control-strip[data-preview-tools]) button[aria-label="复制源码"]'
+  const toolbar = '.code-control-strip[data-preview-tools] button[aria-label="复制源码"]'
   checks.diagram = await wheelMovement(preview)
   checks.toolbar = await wheelMovement(toolbar)
   await move({ x: 700, y: 420 })
@@ -230,13 +230,15 @@ try {
   const stationary = await profileScroll({ x: 700, y: 420 }, false)
   const moving = await profileScroll({ x: 700, y: 420 }, true)
   const maxAlignmentError = await page(() => {
-    const previews = [...document.querySelectorAll('.ProseMirror .rich-code-block')]
-    const toolbars = [...document.querySelectorAll('[data-document-overlays] .code-control-strip')]
-    return Math.max(...previews.map((preview, index) => {
-      const block = preview.getBoundingClientRect()
-      const strip = toolbars[index].getBoundingClientRect()
+    const toolbars = [...document.querySelectorAll('[data-document-overlays] .code-control-strip[data-preview-tools]')]
+    if (!toolbars.length) throw new Error('No nearby code toolbars')
+    return Math.max(...toolbars.map(toolbar => {
+      const anchor = document.querySelector(`.ProseMirror [data-block-id="${CSS.escape(toolbar.dataset.codeAnchor)}"]`)
+      const block = anchor.getBoundingClientRect()
+      const strip = toolbar.getBoundingClientRect()
       return Math.max(Math.abs(block.top + 1 - strip.top), Math.abs(block.left + 1 - strip.left))
     }))
+
   })
   assert.ok(maxAlignmentError <= 0.5, 'Toolbar moved out of alignment after scrolling')
   assert.deepEqual(await activeFilters(preview), Array(10).fill(0), 'Mermaid gallery applied an SVG filter')
@@ -253,6 +255,8 @@ try {
     }))
     assert.deepEqual(after, before, edge + ' boundary shifted')
   }
+  await page(() => scrollTo(0, 0))
+  await frame()
   await page(() => [...document.querySelectorAll('.code-control-strip button')].find(button => button.textContent === '源码').click())
   checks.source = await wheelMovement('.ProseMirror [data-view-mode="code"] pre')
   await page(() => document.querySelector('button[aria-label="页面侧栏"]').click())

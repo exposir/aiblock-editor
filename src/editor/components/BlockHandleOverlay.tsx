@@ -8,7 +8,7 @@ import { createPortal } from 'react-dom'
 import { allowsColumnDrop, createBlockMoveTransaction, getBlockDropSide } from '../extensions/block-drag-logic'
 import type { BlockDragSource, BlockDropSide, Point, Rect } from '../extensions/block-drag-logic'
 import { MultiBlockSelection } from '../extensions/multi-block-selection'
-import { firstLineCenter, hitBlock, marqueeEndpoints, marqueeRect, measureBlock, measureBlocks, positionOfBlockId } from './block-geometry'
+import { blockAtPoint, blockPositionAtElement, firstLineCenter, hitBlock, marqueeEndpoints, marqueeRect, measureBlock, measureBlocks, positionOfBlockId } from './block-geometry'
 import type { MeasuredBlock } from './block-geometry'
 import { BlockActionMenu } from './BlockActionMenu'
 import { offsetRect, overlayOrigin } from './overlay-geometry'
@@ -53,7 +53,7 @@ function pointOf(event: Pick<PointerEvent, 'clientX' | 'clientY'>): Point {
 }
 
 function dropAt(editor: Editor, source: BlockDragSource, point: Point) {
-  const block = hitBlock(measureBlocks(editor.view), point, 6)
+  const block = blockAtPoint(editor.view, point, 6)
   if (!block) return null
   const side = getBlockDropSide(block.rect, point, allowsColumnDrop(editor.state.doc, source, block.pos))
   const transaction = createBlockMoveTransaction(editor.state, source, { blockPos: block.pos, side })
@@ -118,7 +118,8 @@ export function BlockHandleOverlay({ editor, surface, host, blockHash, onQuickIn
   }
 
   function blockPosition(block: ActiveBlock) {
-    return block.id ? positionOfBlockId(editor.state.doc, block.id) : null
+    return blockPositionAtElement(editor.view, block.element) ??
+      (block.id ? positionOfBlockId(editor.state.doc, block.id) : null)
   }
 
   function activateHandle(pos: number) {
@@ -156,7 +157,7 @@ export function BlockHandleOverlay({ editor, surface, host, blockHash, onQuickIn
     if (!shell || !win) return
     let lastMove: PointerEvent | null = null
     let frame = 0
-    let hoverLayout: { blocks: MeasuredBlock[]; x: number; y: number } | undefined
+    let marqueeBlocks: MeasuredBlock[] | undefined
 
     function setSelection(selection: Selection) {
       if (!editor.state.selection.eq(selection)) editor.view.dispatch(editor.state.tr.setSelection(selection))
@@ -164,7 +165,7 @@ export function BlockHandleOverlay({ editor, surface, host, blockHash, onQuickIn
 
     function marqueeSelection(current: Extract<Gesture, { kind: 'marquee' }>, point: Point) {
       const rect = marqueeRect(current.start, point)
-      const endpoints = marqueeEndpoints(measureBlocks(editor.view), rect, current.parentStart, point.y < current.start.y)
+      const endpoints = marqueeEndpoints(marqueeBlocks ??= measureBlocks(editor.view), rect, current.parentStart, point.y < current.start.y)
       const selection = endpoints && MultiBlockSelection.tryCreate(editor.state.doc, endpoints.anchor, endpoints.head)
       setSelection(selection ?? current.original)
       const origin = layerOrigin()
@@ -173,6 +174,7 @@ export function BlockHandleOverlay({ editor, surface, host, blockHash, onQuickIn
 
     function stop(current: Gesture, canceled: boolean) {
       gesture.current = null
+      invalidateGeometry()
       if (current.capture.hasPointerCapture(current.pointerId)) current.capture.releasePointerCapture(current.pointerId)
       if (canceled && current.kind === 'marquee' && current.started && current.doc === editor.state.doc) {
         setSelection(current.original)
@@ -211,19 +213,15 @@ export function BlockHandleOverlay({ editor, surface, host, blockHash, onQuickIn
       if (!editor.isEditable || menuRef.current) return
       const target = event.target
       if (target instanceof Node && layer.current?.contains(target)) return
-      const x = win!.scrollX
-      const y = win!.scrollY
-      const layout = hoverLayout ??= { blocks: measureBlocks(editor.view), x, y }
-      const at = { x: point.x + x - layout.x, y: point.y + y - layout.y }
-      const block = hitBlock(layout.blocks, at)
+      const block = blockAtPoint(editor.view, point)
       const prior = activeRef.current
       if (block) {
-        if (block.element !== prior?.element || block.pos !== prior.pos) showBlock(measureBlock(editor.view, block.pos))
+        if (block.element !== prior?.element || block.pos !== prior.pos) showBlock(block)
         return
       }
-      const rect = layout.blocks.find(item => item.element === prior?.element)?.rect
-      if (!rect || at.x < rect.left - handleWidth - 8 || at.x > rect.left ||
-          at.y < rect.top || at.y > Math.max(rect.bottom, rect.top + 28)) showBlock(null)
+      const rect = prior?.element.getBoundingClientRect()
+      if (!rect || point.x < rect.left - handleWidth - 8 || point.x > rect.left ||
+          point.y < rect.top || point.y > Math.max(rect.bottom, rect.top + 28)) showBlock(null)
     }
 
     function queuePointer(event: PointerEvent) {
@@ -235,8 +233,8 @@ export function BlockHandleOverlay({ editor, surface, host, blockHash, onQuickIn
       })
     }
 
-    function invalidateHover() {
-      hoverLayout = undefined
+    function invalidateGeometry() {
+      marqueeBlocks = undefined
     }
 
     function refreshLayout() {
@@ -244,14 +242,17 @@ export function BlockHandleOverlay({ editor, surface, host, blockHash, onQuickIn
       const pos = prior ? blockPosition(prior) : null
       const commit = prior && measureActive(pos === null ? null : measureBlock(editor.view, pos))
       return () => {
-        invalidateHover()
+        invalidateGeometry()
         commit?.()
         if (gesture.current && lastMove) queuePointer(lastMove)
       }
     }
 
     function followDragScroll() {
-      if (gesture.current && lastMove) queuePointer(lastMove)
+      if (gesture.current && lastMove) {
+        invalidateGeometry()
+        queuePointer(lastMove)
+      }
     }
 
     function startMarquee(event: PointerEvent) {
@@ -333,7 +334,7 @@ export function BlockHandleOverlay({ editor, surface, host, blockHash, onQuickIn
     doc.addEventListener('keydown', escape, true)
     win.addEventListener('scroll', followDragScroll, { capture: true, passive: true })
     editor.on('selectionUpdate', showSelected)
-    editor.on('update', invalidateHover)
+    editor.on('update', invalidateGeometry)
     return () => {
       win.cancelAnimationFrame(frame)
       stopLayout()
@@ -345,7 +346,7 @@ export function BlockHandleOverlay({ editor, surface, host, blockHash, onQuickIn
       doc.removeEventListener('keydown', escape, true)
       win.removeEventListener('scroll', followDragScroll, true)
       editor.off('selectionUpdate', showSelected)
-      editor.off('update', invalidateHover)
+      editor.off('update', invalidateGeometry)
     }
   }, [editor, surface])
 

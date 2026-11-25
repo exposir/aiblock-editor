@@ -3,7 +3,7 @@ import type { Placement, ReferenceElement } from '@floating-ui/dom'
 import type { Editor } from '@tiptap/core'
 import { useCallback, useLayoutEffect, useMemo, useState, useSyncExternalStore } from 'react'
 import type { RefObject } from 'react'
-import { toOverlayRect } from './overlay-geometry'
+import { overlayOrigin, toOverlayRect } from './overlay-geometry'
 import type { OverlayRect } from './overlay-geometry'
 import { subscribeOverlayLayout } from './overlay-layout'
 
@@ -72,8 +72,13 @@ export function useOverlayRect(
   anchor: HTMLElement | null,
   host: HTMLElement | null,
   editorRoot: HTMLElement | null,
+  initial?: OverlayRect,
 ) {
-  const [rect, setRect] = useState<OverlayRect | null>(null)
+  const [rect, setRect] = useState<OverlayRect | null>(() => {
+    if (initial) return initial
+    if (!anchor || !host) return null
+    return toOverlayRect(anchor.getBoundingClientRect(), overlayOrigin(host))
+  })
   useLayoutEffect(() => {
     if (!anchor || !host || !editorRoot) {
       setRect(null)
@@ -85,8 +90,8 @@ export function useOverlayRect(
       return () => setRect(previous => previous && previous.left === next.left && previous.top === next.top &&
         previous.width === next.width && previous.height === next.height ? previous : next)
     }
-    measure(element => element.getBoundingClientRect())()
+    if (!initial) measure(element => element.getBoundingClientRect())()
     return subscribeOverlayLayout(editorRoot, measure)
-  }, [anchor, editorRoot, host])
+  }, [anchor, editorRoot, host, initial])
   return rect
 }

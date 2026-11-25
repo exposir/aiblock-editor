@@ -1,14 +1,15 @@
-import { Node, mergeAttributes } from '@tiptap/core'
 import { Fragment, Slice } from '@tiptap/pm/model'
 import type { Node as ProseMirrorNode, NodeType, Schema } from '@tiptap/pm/model'
 import { Plugin, PluginKey } from '@tiptap/pm/state'
 import type { EditorState, Transaction } from '@tiptap/pm/state'
 import { ReplaceAroundStep, ReplaceStep, Transform } from '@tiptap/pm/transform'
-import { ReactNodeViewRenderer } from '@tiptap/react'
 import type { ColumnEdgeTarget, ColumnLayout, ColumnLayoutInput } from '../types'
 import { ColumnListView } from '../views/column-list-view'
 import { MAX_COLUMNS, normalizeColumnWidths, resizedColumnWidths } from './column-widths'
-import { createNodeIndex, textEdits } from './document-changes'
+import { changedNodes, createNodeIndex, textEdits } from './document-changes'
+import { ColumnListSchema, ColumnSchema } from '../schema/columns'
+
+export { ColumnSchema as Column }
 
 const columnLayoutKey = new PluginKey('columnLayout')
 
@@ -167,20 +168,7 @@ export function insertBlockIntoColumnEdge(
   )).failed
 }
 
-export const ColumnList = Node.create({
-  name: 'columnList',
-  group: 'block',
-  content: 'column+',
-  isolating: true,
-
-  parseHTML() {
-    return [{ tag: 'div[data-column-list]' }]
-  },
-
-  renderHTML({ HTMLAttributes }) {
-    return ['div', mergeAttributes(HTMLAttributes, { 'data-column-list': '' }), 0]
-  },
-
+export const ColumnList = ColumnListSchema.extend({
   addCommands() {
     return {
       insertColumns: layout => ({ state, commands }) => {
@@ -207,9 +195,12 @@ export const ColumnList = Node.create({
     const columns = createNodeIndex(node => node.type === type)
     return [new Plugin({
       key: columnLayoutKey,
-      appendTransaction(transactions, _oldState, state) {
-        if (!transactions.some(tr => tr.getMeta(columnLayoutKey) || (tr.docChanged && textEdits(tr) === null))) return null
-        const positions = columns(state.doc).map(({ pos }) => pos)
+      appendTransaction(transactions, old, state) {
+        const initial = transactions.some(tr => tr.getMeta(columnLayoutKey))
+        if (!initial && !transactions.some(tr => tr.docChanged && textEdits(tr) === null)) return null
+        const positions: number[] = []
+        if (initial) for (const { pos } of columns(state.doc)) positions.push(pos)
+        else changedNodes(old.doc, state.doc, (node, pos) => { if (node.type === type) positions.push(pos) })
 
         const tr = state.tr
         for (const pos of positions.reverse()) {
@@ -230,33 +221,6 @@ export const ColumnList = Node.create({
   },
 
   addNodeView() {
-    return ReactNodeViewRenderer(ColumnListView, { attrs: ({ HTMLAttributes }) => HTMLAttributes })
-  },
-})
-
-export const Column = Node.create({
-  name: 'column',
-  content: 'block+',
-  isolating: true,
-
-  addAttributes() {
-    return {
-      width: {
-        default: null,
-        parseHTML: element => {
-          const width = Number(element.getAttribute('data-width'))
-          return Number.isFinite(width) && width > 0 ? width : null
-        },
-        renderHTML: attrs => typeof attrs.width === 'number' ? { 'data-width': attrs.width } : {},
-      },
-    }
-  },
-
-  parseHTML() {
-    return [{ tag: 'div[data-column]' }]
-  },
-
-  renderHTML({ HTMLAttributes }) {
-    return ['div', mergeAttributes(HTMLAttributes, { 'data-column': '' }), 0]
+    return ColumnListView
   },
 })
