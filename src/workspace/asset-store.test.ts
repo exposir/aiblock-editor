@@ -4,6 +4,8 @@ import { IDBFactory } from 'fake-indexeddb'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { testImage } from '../test/image-fixture'
 import { createBrowserAssetStore, removeBrowserImageAssets } from './asset-store'
+import { browserWorkspaceStorage } from './workspace-storage'
+import type { WorkspaceIndex } from './workspace-format'
 
 beforeEach(() => {
   vi.stubGlobal('Blob', NodeBlob)
@@ -16,6 +18,51 @@ afterEach(() => {
 })
 
 describe('IndexedDB 图片资产', () => {
+  it('旧图重新粘贴去重后得到新的宽限期，仍保留原始创建时间', async () => {
+    const now = Date.now()
+    const clock = vi.spyOn(Date, 'now').mockReturnValue(now - 600_000)
+    const factory = new IDBFactory()
+    const assets = createBrowserAssetStore(factory)
+    const workspace = browserWorkspaceStorage(null, factory)
+    const image = testImage()
+    const original = await assets.saveImageAsset(image)
+    const id = 'bfe20256-0754-468f-818e-fc40b06abdc4'
+    const page = { id, parentId: null, title: 'live', icon: '📄', comments: [], createdAt: 1, updatedAt: 1, order: 0 }
+    await workspace.commit({
+      index: { version: 2, activePageId: id, pages: [page] },
+      pages: [{ id, updatedAt: 1, content: { type: 'doc', content: [{ type: 'paragraph' }] } }],
+      removedPageIds: [],
+    })
+    clock.mockReturnValue(now)
+    expect(await assets.saveImageAsset(image)).toEqual(original)
+    await expect(workspace.pruneOrphanAssets!()).resolves.toEqual({ removedCount: 0, keptCount: 1 })
+    clock.mockReturnValue(now + 300_000)
+    await expect(workspace.pruneOrphanAssets!()).resolves.toEqual({ removedCount: 1, keptCount: 0 })
+  })
+
+  it('同一事务检查活页和回收站，缺分片时回滚，清空后回收引用消失的资产', async () => {
+    const factory = new IDBFactory()
+    const assets = createBrowserAssetStore(factory)
+    const workspace = browserWorkspaceStorage(null, factory)
+    const image = testImage()
+    const [kept, protectedImage] = await Promise.all([
+      assets.saveImageAsset(image), assets.saveImageAsset({ ...image, bytes: Uint8Array.from([...image.bytes, 1]) }),
+    ])
+    const id = 'bfe20256-0754-468f-818e-fc40b06abdc4'
+    const removedId = 'bfe20256-0754-468f-818e-fc40b06abdc5'
+    const page = { id, parentId: null, title: 'live', icon: '📄', comments: [], createdAt: 1, updatedAt: 1, order: 0 }
+    const index: WorkspaceIndex = { version: 2, activePageId: id, pages: [page], trash: [{ ...page, id: removedId, deletedAt: 2 }] }
+    await workspace.commit({ index, pages: [{ id, updatedAt: 1, content: { type: 'doc' } }], removedPageIds: [] })
+    await expect(workspace.pruneOrphanAssets!(0)).rejects.toThrow('missing or invalid page')
+    expect(await assets.listMetadata()).toHaveLength(2)
+    await workspace.commit({ pages: [{
+      id: removedId, updatedAt: 1, content: { type: 'doc', content: [{ type: 'imageBlock', attrs: { assetId: kept.id } }] },
+    }], removedPageIds: [] })
+    await expect(workspace.pruneOrphanAssets!(0, [protectedImage.id])).resolves.toEqual({ removedCount: 0, keptCount: 2 })
+    await workspace.commit({ index: { ...index, trash: [] }, pages: [], removedPageIds: [removedId] })
+    await expect(workspace.pruneOrphanAssets!(0, [protectedImage.id])).resolves.toEqual({ removedCount: 1, keptCount: 1 })
+    await expect(assets.readImageAssets([kept.id, protectedImage.id])).resolves.toEqual([null, protectedImage])
+  })
   it('bytes 和 Blob 按 SHA-256 去重，重新打开后可批量读取元数据', async () => {
     const factory = new IDBFactory()
     const assets = createBrowserAssetStore(factory)

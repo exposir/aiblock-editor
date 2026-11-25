@@ -28,9 +28,11 @@ export type DesktopMenuCommand = typeof menuCommands[number]
 export const desktopChannels = {
   readIndex: 'workspace:read-index',
   readPage: 'workspace:read-page',
+  peekPage: 'workspace:peek-page',
   commit: 'workspace:commit',
   saveImageAsset: 'asset:save-image',
   readImageAssets: 'asset:read-images',
+  pruneOrphanAssets: 'asset:prune-orphans',
   openMarkdownFile: 'file:open-markdown',
   saveFile: 'file:save',
   menuCommand: 'menu:command',

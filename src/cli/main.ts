@@ -1,10 +1,12 @@
+import { resolve } from 'node:path'
+import { assetGraceMs } from '../workspace/asset-gc'
 import { isPageId } from '../workspace/workspace-format'
 import { WorkspaceConflictError, WorkspaceLockedError } from '../workspace/workspace-files'
 import { allowedFlags, parseArguments, required } from './args'
 import { CliError, conflictError, usageError } from './errors'
 import {
-  appendPage, createPage, deletePage, getPage, listPages, openCliWorkspace, readMarkdownInput,
-  renamePage, resolveWorkspacePath,
+  addImageAsset, appendPage, collectGarbage, createPage, deletePage, getPage, listPages, openCliWorkspace,
+  readMarkdownInput, renamePage, resolveWorkspacePath, searchPages, updatePage,
 } from './workspace'
 
 export interface CliIO {
@@ -19,10 +21,14 @@ const helpText = `aiblock-doc — 操作本地 aiblock-editor 桌面工作区
 用法:
   aiblock-doc list
   aiblock-doc get <page-id> [--format markdown|json]
+  aiblock-doc search <query> [--limit <n>]
   aiblock-doc create --title <title> [--parent <page-id>] [--icon <emoji>] [--markdown -|<file>] [--activate]
   aiblock-doc append <page-id> --if-match <etag> [--markdown -|<file>]
+  aiblock-doc update <page-id> --if-match <etag> [--markdown -|<file>]
   aiblock-doc rename <page-id> --title <title> --if-match <index-etag>
   aiblock-doc delete <page-id> --if-match <index-etag>
+  aiblock-doc add-image <file>
+  aiblock-doc gc [--grace-ms <n>]
 
 全局参数:
   --workspace <dir>   工作区目录（含 index.json）；默认 Electron userData/workspace
@@ -32,13 +38,17 @@ const helpText = `aiblock-doc — 操作本地 aiblock-editor 桌面工作区
 输出:
   成功: stdout 输出 {"ok":true,"data":...}
   失败: stderr 输出 {"ok":false,"error":{code,message,hint}}
-  退出码: 0 成功, 1 I/O/未知, 2 参数, 3 页面不存在, 4 版本冲突, 5 内容/格式
+  退出码: 0 成功, 1 I/O/未知, 2 参数, 3 页面/文件不存在, 4 版本冲突, 5 内容/格式
 
 示例:
   AIBLOCK_WORKSPACE=~/Library/Application\\ Support/aiblock-editor/workspace aiblock-doc list
+  aiblock-doc search '发布计划' --limit 5
   aiblock-doc get 430e9296-6acb-4b74-84c3-a4bd05a20701
   printf '# 会议记录\\n\\n- 结论\\n' | aiblock-doc create --title '会议记录' --markdown - --activate
   aiblock-doc append <page-id> --if-match <etag> --markdown notes.md
+  aiblock-doc update <page-id> --if-match <etag> --markdown rewritten.md --dry-run
+  aiblock-doc add-image screenshot.png
+  aiblock-doc gc --grace-ms 0 --dry-run
 `
 
 function defaultIO(): CliIO {
@@ -78,6 +88,20 @@ function noPages(args: ReturnType<typeof parseArguments>) {
   if (args.positionals.length) throw usageError('该命令不接受位置参数。')
 }
 
+function integerOption(value: string | undefined, name: string, fallback: number, minimum: number) {
+  if (value === undefined) return fallback
+  const parsed = /^[0-9]+$/.test(value) ? Number(value) : Number.NaN
+  if (!Number.isSafeInteger(parsed) || parsed < minimum) {
+    throw usageError(`--${name} 必须是大于等于 ${minimum} 的整数。`)
+  }
+  return parsed
+}
+
+function imageFile(args: ReturnType<typeof parseArguments>) {
+  if (args.positionals.length !== 1) throw usageError('需要一个图片文件路径。')
+  return args.positionals[0]!
+}
+
 function workspaceFrom(args: ReturnType<typeof parseArguments>) {
   return openCliWorkspace(resolveWorkspacePath(args.values.get('workspace')))
 }
@@ -93,7 +117,7 @@ function mapError(error: unknown): CliError {
   if (error instanceof TypeError || error instanceof SyntaxError) {
     return new CliError('invalid_content', error.message, '检查输入内容和参数。')
   }
-  if (error instanceof Error && /^(?:Invalid (?:page|workspace|stored)|Stored file)/.test(error.message)) {
+  if (error instanceof Error && /^(?:Cannot check assets|Invalid (?:page|workspace|stored)|Stored file)/.test(error.message)) {
     return new CliError('invalid_content', error.message, '工作区或页面内容损坏，请检查对应 JSON 文件。')
   }
   return new CliError('io_error', error instanceof Error ? error.message : '未知错误。', '检查工作区路径和文件权限。')
@@ -124,6 +148,14 @@ export async function runCli(argv: readonly string[], io: CliIO = defaultIO()): 
         const format = args.values.get('format') ?? 'markdown'
         if (format !== 'markdown' && format !== 'json') throw usageError('--format 仅支持 markdown 或 json。')
         writeSuccess(io, await getPage(workspace(['format']), id, format))
+        return 0
+      }
+      case 'search': {
+        if (args.positionals.length !== 1) throw usageError('需要一个搜索关键词。')
+        const query = args.positionals[0]!.trim()
+        if (!query) throw usageError('搜索关键词不能为空。')
+        const limit = integerOption(args.values.get('limit'), 'limit', 20, 1)
+        writeSuccess(io, await searchPages(workspace(['limit']), query, limit))
         return 0
       }
       case 'create': {
@@ -163,6 +195,22 @@ export async function runCli(argv: readonly string[], io: CliIO = defaultIO()): 
         }))
         return 0
       }
+      case 'update': {
+        const id = onePage(args)
+        const ifMatch = required(args, 'if-match')
+        const files = workspace(['if-match', 'markdown'])
+        const markdown = await readMarkdownInput(args.values.get('markdown'), {
+          required: true,
+          readStdin: () => stdinText(io),
+          cwd: io.cwd ?? process.cwd(),
+        })
+        writeSuccess(io, await updatePage(files, id, {
+          ifMatch,
+          markdown: markdown ?? '',
+          dryRun: args.flags.has('dry-run'),
+        }))
+        return 0
+      }
       case 'rename': {
         const id = onePage(args)
         const title = required(args, 'title')
@@ -179,6 +227,21 @@ export async function runCli(argv: readonly string[], io: CliIO = defaultIO()): 
         const ifMatch = required(args, 'if-match')
         writeSuccess(io, await deletePage(workspace(['if-match']), id, {
           ifMatch,
+          dryRun: args.flags.has('dry-run'),
+        }))
+        return 0
+      }
+      case 'add-image': {
+        const file = imageFile(args)
+        const target = resolve(io.cwd ?? process.cwd(), file)
+        writeSuccess(io, await addImageAsset(workspace(), target, args.flags.has('dry-run')))
+        return 0
+      }
+      case 'gc': {
+        noPages(args)
+        const graceMs = integerOption(args.values.get('grace-ms'), 'grace-ms', assetGraceMs, 0)
+        writeSuccess(io, await collectGarbage(workspace(['grace-ms']), {
+          graceMs,
           dryRun: args.flags.has('dry-run'),
         }))
         return 0

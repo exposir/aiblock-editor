@@ -2,8 +2,8 @@ import type { JSONContent } from '@tiptap/core'
 import type { Schema } from '@tiptap/pm/model'
 import { markdownToDoc } from '../editor/markdown/markdown-codec'
 import { importedTitle } from '../editor/markdown/markdown-files'
-import { checkedPageShard } from './workspace-format'
-import type { PageMetadata, PageShard } from './workspace-format'
+import { checkedPageShard, pageMetadata } from './workspace-format'
+import type { PageMetadata, PageShard, TrashedPageMetadata } from './workspace-format'
 
 export interface PageRecord extends PageMetadata {
   readonly content: JSONContent
@@ -16,6 +16,7 @@ export interface WorkspacePage extends PageMetadata {
 export interface WorkspaceState<P extends PageMetadata = PageRecord> {
   readonly activePageId: string
   readonly pages: readonly P[]
+  readonly trash?: readonly TrashedPageMetadata[]
   readonly demoVersion?: number
 }
 
@@ -103,7 +104,10 @@ function nextOrder(workspace: WorkspaceState<PageMetadata>, parentId: string | n
 
 export function addPage<P extends WorkspacePage>(workspace: WorkspaceState<P>, identity: PageIdentity, initial: NewPage = {}): WorkspaceState<P | PageRecord> {
   const parentId = initial.parentId ?? null
-  if ((parentId !== null && !findPage(workspace, parentId)) || findPage(workspace, identity.id)) return workspace
+  const id = identity.id.toLowerCase()
+  if ((parentId !== null && !findPage(workspace, parentId)) ||
+      workspace.pages.some(page => page.id.toLowerCase() === id) ||
+      workspace.trash?.some(page => page.id.toLowerCase() === id)) return workspace
   const page = makePage(identity, nextOrder(workspace, parentId), initial)
   return { ...workspace, activePageId: page.id, pages: [...workspace.pages, page] }
 }
@@ -149,6 +153,12 @@ export function removePage<P extends WorkspacePage>(workspace: WorkspaceState<P>
   if (!page) return workspace
   const index = pagesByParent(workspace)
   const removed = collectTree(index, [id])
+  return withoutPageTree(workspace, page, index, removed, fallback)
+}
+
+function withoutPageTree<P extends WorkspacePage>(workspace: WorkspaceState<P>, page: P,
+  index: ReadonlyMap<string | null, readonly P[]>, removed: ReadonlySet<string>, fallback: PageIdentity,
+): WorkspaceState<P | PageRecord> {
   const pages = workspace.pages.filter(candidate => !removed.has(candidate.id))
   if (!pages.length) return { ...workspace, ...createWorkspace(fallback) }
   if (!removed.has(workspace.activePageId)) return { ...workspace, pages }
@@ -157,6 +167,45 @@ export function removePage<P extends WorkspacePage>(workspace: WorkspaceState<P>
   const at = siblings.indexOf(page)
   const activePageId = siblings[at + 1]?.id ?? siblings[at - 1]?.id ?? page.parentId ?? pages[0]!.id
   return { ...workspace, activePageId, pages }
+}
+
+export function trashPage<P extends WorkspacePage>(workspace: WorkspaceState<P>, id: string, fallback: PageIdentity): WorkspaceState<P | PageRecord> {
+  const page = findPage(workspace, id)
+  if (!page) return workspace
+  const index = pagesByParent(workspace)
+  const removed = collectTree(index, [id])
+  const trash = workspace.pages.filter(entry => removed.has(entry.id)).map(entry => ({
+    ...pageMetadata(entry), deletedAt: fallback.now,
+  }))
+  return { ...withoutPageTree(workspace, page, index, removed, fallback), trash: [...workspace.trash ?? [], ...trash] }
+}
+
+function trashedTree(trash: readonly TrashedPageMetadata[], id: string) {
+  if (!trash.some(page => page.id === id)) return new Set<string>()
+  return pageSubtree({ pages: trash, activePageId: id }, id)
+}
+
+export function restoreTrashedPage<P extends WorkspacePage>(workspace: WorkspaceState<P>, id: string): WorkspaceState<P | WorkspacePage> {
+  const trash = workspace.trash ?? []
+  const restored = trashedTree(trash, id)
+  if (!restored.size) return workspace
+  const pages = trash.filter(page => restored.has(page.id)).map(entry => {
+    const page = pageMetadata(entry)
+    if (page.id !== id || page.parentId === null || findPage(workspace, page.parentId)) return page
+    return { ...page, parentId: null, order: nextOrder(workspace, null) }
+  })
+  return { ...workspace, pages: [...workspace.pages, ...pages], trash: trash.filter(page => !restored.has(page.id)) }
+}
+
+export function purgeTrashedPage<P extends PageMetadata>(workspace: WorkspaceState<P>, id: string) {
+  const removed = trashedTree(workspace.trash ?? [], id)
+  const remaining = removed.size ? { ...workspace, trash: workspace.trash?.filter(page => !removed.has(page.id)) } : workspace
+  return { workspace: remaining, removedPageIds: [...removed] }
+}
+
+export function emptyTrash<P extends PageMetadata>(workspace: WorkspaceState<P>) {
+  const removedPageIds = workspace.trash?.map(page => page.id) ?? []
+  return { workspace: removedPageIds.length ? { ...workspace, trash: [] } : workspace, removedPageIds }
 }
 
 export function importMarkdownPage<P extends WorkspacePage>(

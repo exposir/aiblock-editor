@@ -95,10 +95,12 @@ describe('image block and transfers', () => {
     const viewport = mockViewport()
     editor = new Editor({ extensions: createEditorExtensions(),
       content: '<img src="https://example.test/a.png" alt="示意图" width="800" height="400">', })
+    document.body.append(editor.view.dom)
     const figure = editor.view.dom.querySelector<HTMLElement>('figure')!
     const frame = figure.firstElementChild as HTMLElement
     expect(frame.style.aspectRatio).toBe('800 / 400')
     expect(frame.querySelector('img')).toBeNull()
+    await viewport.flush()
     viewport.show(figure, true, 800)
     await waitFor(() => expect(frame.querySelector('img')).toHaveAttribute('alt', '示意图'))
     expect(frame.querySelector('img')).toHaveAttribute('decoding', 'async')

@@ -3,7 +3,7 @@ import { act, render } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { createEditorExtensions } from '../editor/extensions'
 import { DEMO_HANDBOOK_ID, createDemoWorkspace } from './demo-workspace'
-import { WORKSPACE_STORAGE_KEY, activatePage, findPage, removePage, updatePage } from './page-store'
+import { WORKSPACE_STORAGE_KEY, activatePage, findPage, removePage, restoreTrashedPage, trashPage, updatePage } from './page-store'
 import type { WorkspaceState } from './page-store'
 import { useWorkspace } from './useWorkspace'
 import { pageMetadata, splitLegacyWorkspace } from './workspace-format'
@@ -77,6 +77,37 @@ describe('useWorkspace 工作区生命周期', () => {
     vi.useRealTimers()
     localStorage.clear()
     history.replaceState(null, '', '/')
+  })
+
+  it('回收站保留未刷盘的正文，恢复后可读，清空提交后才执行 GC', async () => {
+    const { storage, seed } = seededStorage()
+    const prune = vi.fn(async () => ({ removedCount: 0, keptCount: 0 }))
+    const persistence = { ...storage, pruneOrphanAssets: prune }
+    const view = await mount(persistence)
+    const id = seed.index.activePageId
+    const fallback = { id: '3165da01-51e4-4752-a7fc-bfa18d154d4e', now: 42 }
+    await act(async () => {
+      latest.stageContent(id, () => textDoc('软删前仍在编辑'))
+      latest.change(workspace => trashPage(workspace, id, fallback))
+    })
+    expect(await storage.readPage(id)).toMatchObject({ content: textDoc('软删前仍在编辑') })
+    expect((await storage.readIndex()).trash).toEqual(expect.arrayContaining([expect.objectContaining({ id })]))
+    expect(prune).not.toHaveBeenCalled()
+    view.unmount()
+    await mount(persistence)
+    expect(latest.workspace?.trash?.some(page => page.id === id)).toBe(true)
+    await act(async () => { latest.change(workspace => restoreTrashedPage(workspace, id)) })
+    expect(await latest.loadPage(id)).toMatchObject({ content: textDoc('软删前仍在编辑') })
+    await act(async () => { latest.change(workspace => trashPage(workspace, id, fallback)) })
+    storage.commit.mockRejectedValueOnce(new Error('disk full'))
+    await act(async () => { latest.purgeTrash() })
+    expect(prune).not.toHaveBeenCalled()
+    expect(await storage.readPage(id)).not.toBeNull()
+    await act(async () => {
+      latest.change(workspace => updatePage(workspace, workspace.activePageId, { title: '再保存一次' }, 44))
+    })
+    expect(await storage.readPage(id)).toBeNull()
+    expect(prune).toHaveBeenCalledOnce()
   })
 
   it('initial: 首次打开生成五个示例页并立即保存', async () => {

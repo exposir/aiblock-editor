@@ -7,18 +7,32 @@ import { pathToFileURL } from 'node:url'
 import { appSlug } from '../src/app-identity.js'
 import { desktopChannels as channels, suggestedFileName } from '../src/desktop/bridge.js'
 import { imageAssetScheme } from '../src/workspace/asset-format.js'
+import { conflictPreviewPrefix } from '../src/workspace/markdown-diff.js'
 import type { WorkspaceCloseResult, WorkspaceCommitOptions, WorkspaceExternalChange } from '../src/workspace/workspace-format.js'
 import type { DesktopMenuCommand } from '../src/desktop/bridge.js'
 import { isThemeMode, parseThemeMode, themeBackgrounds, themeLabels, themeModes } from '../src/theme/theme.js'
 import type { ThemeMode } from '../src/theme/theme.js'
-import { decideNavigation, developmentUrl, externalUrl, isAppDocument } from './security.js'
-import { createImageAssetFiles, createWorkspaceFiles, isSaveFileOptions, readMarkdownFile, readOptionalText, writeAtomicText } from './storage.js'
+import { createMainLogger, createRendererRecovery } from './logger.js'
+import { contentSecurityPolicy, decideNavigation, developmentUrl, externalUrl, isAppDocument } from './security.js'
+import { createImageAssetFiles, createWorkspaceFiles, isSaveFileOptions, pruneOrphanImageAssets, readMarkdownFile, readOptionalText, writeAtomicText } from './storage.js'
 import { WorkspaceConflictError, WorkspaceLockedError } from '../src/workspace/workspace-files.js'
 import { watchWorkspace } from './workspace-watcher.js'
 import type { WorkspaceWatcher } from './workspace-watcher.js'
 import { minimumWindowSize, parseWindowState, restoreWindowState } from './window-state.js'
 
 const isMac = process.platform === 'darwin'
+const profileOverride = app.commandLine.getSwitchValue('user-data-dir')
+const userData = profileOverride ? resolve(profileOverride) : join(app.getPath('appData'), appSlug)
+const logger = createMainLogger(userData)
+process.on('uncaughtException', error => {
+  logger.write('error', 'uncaughtException', error)
+  app.exit(1)
+})
+process.on('unhandledRejection', error => logger.write('error', 'unhandledRejection', error))
+
+mkdirSync(userData, { recursive: true })
+app.setPath('userData', userData)
+
 const productionPage = pathToFileURL(join(app.getAppPath(), 'dist', 'index.html')).href
 function rendererUrl() {
   const dev = app.isPackaged ? undefined : process.env.AIBLOCK_EDITOR_DEV_URL
@@ -36,7 +50,7 @@ let quitting = false
 let workspaceWatcher: WorkspaceWatcher | undefined
 
 function reportError(error: unknown) {
-  console.error(error)
+  logger.write('error', 'main-process', error)
 }
 
 function openExternal(target: string) {
@@ -52,6 +66,17 @@ function isTrustedSender(event: IpcMainEvent | IpcMainInvokeEvent): boolean {
 
 function installNavigationPolicy(window: BrowserWindow) {
   const { webContents } = window
+  const csp = contentSecurityPolicy(appUrl !== productionPage)
+  webContents.session.webRequest.onHeadersReceived((details, callback) => {
+    if (details.resourceType !== 'mainFrame' || !isAppDocument(details.url, appUrl)) {
+      callback({})
+      return
+    }
+    const headers = { ...details.responseHeaders }
+    const key = Object.keys(headers).find(name => name.toLowerCase() === 'content-security-policy') ?? 'Content-Security-Policy'
+    headers[key] = [...(headers[key] ?? []), csp]
+    callback({ responseHeaders: headers })
+  })
   webContents.setWindowOpenHandler(({ url }) => {
     const decision = decideNavigation(url, appUrl)
     if (decision.kind === 'external') openExternal(decision.url)
@@ -180,10 +205,18 @@ function trustedHandler(channel: string, handle: (window: BrowserWindow, value: 
 
 function installFileHandlers(
   workspace: ReturnType<typeof createWorkspaceFiles>,
+  preview: ReturnType<typeof createWorkspaceFiles>,
   assets: ReturnType<typeof createImageAssetFiles>,
 ) {
   trustedHandler(channels.readIndex, () => workspace.readIndex())
-  trustedHandler(channels.readPage, (_window, id) => workspace.readPage(id))
+  trustedHandler(channels.peekPage, (_window, id) => preview.readPage(id))
+  trustedHandler(channels.readPage, (_window, id) => {
+    // A comparison read must not advance the baseline used by autosave.
+    if (typeof id === 'string' && id.startsWith(conflictPreviewPrefix)) {
+      return preview.readPage(id.slice(conflictPreviewPrefix.length))
+    }
+    return workspace.readPage(id)
+  })
   trustedHandler(channels.commit, async (_window, payload) => {
     const envelope = payload && typeof payload === 'object' && 'changes' in payload
       ? payload as { changes: unknown; options?: WorkspaceCommitOptions }
@@ -197,8 +230,16 @@ function installFileHandlers(
       throw error
     }
   })
-  trustedHandler(channels.saveImageAsset, (_window, input) => assets.save(input))
+  trustedHandler(channels.saveImageAsset, (_window, input) => workspace.mutate(() => assets.save(input)))
   trustedHandler(channels.readImageAssets, (_window, ids) => assets.readMetadata(ids))
+  trustedHandler(channels.pruneOrphanAssets, async (_window, request) => {
+    try {
+      return await pruneOrphanImageAssets(preview, assets, request)
+    } catch (error) {
+      logger.write('warn', 'prune-image-assets', error)
+      throw error
+    }
+  })
   trustedHandler(channels.openMarkdownFile, async window => {
     const { canceled, filePaths } = await dialog.showOpenDialog(window, {
       properties: ['openFile'],
@@ -277,9 +318,34 @@ async function createWindow(
       if (saved.maximized) window.maximize()
       window.show()
     })
-    window.webContents.on('render-process-gone', (_event, details) => reportError(details))
     let closing = false
     let closeAllowed = false
+    const recover = createRendererRecovery(logger, {
+      available: () => !closing && !quitting && !window.isDestroyed(),
+      async prompt(repeated) {
+        const { response } = await dialog.showMessageBox(window, {
+          type: 'error',
+          title: '工作区显示中断',
+          message: repeated ? '渲染进程在 10 秒内连续崩溃' : '渲染进程已退出',
+          detail: repeated
+            ? '窗口不会自动重启。可以先查看日志，或手动重新加载。未保存的编辑可能丢失。'
+            : '重新加载会打开最近保存的工作区。未保存的编辑可能丢失。',
+          buttons: ['重新加载窗口', '打开日志目录', '退出'],
+          defaultId: repeated ? 2 : 0,
+          cancelId: 2,
+        })
+        return response === 0 ? 'reload' : response === 1 ? 'logs' : 'quit'
+      },
+      async openLogs() {
+        const error = await shell.openPath(logger.directory)
+        if (error) logger.write('error', 'open-log-directory', error)
+      },
+      reload: () => window.reload(),
+      quit: () => app.quit(),
+    })
+    window.webContents.on('render-process-gone', (_event, details) => {
+      void recover(details).catch(reportError)
+    })
     window.on('close', event => {
       if (closeAllowed) return
       event.preventDefault()
@@ -325,16 +391,14 @@ async function createWindow(
       })
     })
     window.on('closed', () => { mainWindow = null })
-    await window.loadURL(appUrl)
+    await window.loadURL(appUrl).catch(error => {
+      if (!window.isDestroyed() && window.webContents.isCrashed()) return
+      throw error
+    })
   } finally {
     openingWindow = false
   }
 }
-
-const profileOverride = app.commandLine.getSwitchValue('user-data-dir')
-const userData = profileOverride ? resolve(profileOverride) : join(app.getPath('appData'), appSlug)
-mkdirSync(userData, { recursive: true })
-app.setPath('userData', userData)
 
 protocol.registerSchemesAsPrivileged([{ scheme: imageAssetScheme, privileges: { standard: true, secure: true, supportFetchAPI: true, corsEnabled: true } }])
 
@@ -360,7 +424,7 @@ if (app.requestSingleInstanceLock()) {
     nativeTheme.themeSource = parseThemeMode(await readOptionalText(themePath).catch(() => null))
     const theme = installTheme(themePath)
     const showWindow = () => createWindow(statePath, theme, watcher)
-    installFileHandlers(workspace, assets)
+    installFileHandlers(workspace, createWorkspaceFiles(directory), assets)
     installMenu(theme.setTheme)
     app.on('activate', () => { void showWindow().catch(reportError) })
     app.on('second-instance', () => {

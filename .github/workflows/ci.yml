@@ -1,0 +1,86 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 12.21.0
+          run_install: false
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Type-check renderer
+        run: pnpm tsc --noEmit
+
+      - name: Type-check Electron
+        run: pnpm tsc --noEmit -p tsconfig.electron.json
+
+      - name: Test
+        run: pnpm test
+
+      - name: Build renderer
+        run: pnpm build
+
+      - name: Build CLI
+        run: pnpm cli:build
+
+      - name: Build Electron
+        run: pnpm electron:build
+
+      - name: Build documentation
+        run: pnpm docs:build
+
+      - name: Check legacy brand strings
+        shell: bash
+        run: |
+          set -euo pipefail
+          # Assemble the pattern at runtime so this workflow does not match itself.
+          legacy_pattern="$(printf '%s%s|%s%s|%s%s' 'la' 'rk' 'fei' 'shu' '飞' '书')"
+          if command -v rg >/dev/null 2>&1; then
+            hits="$(rg -i --hidden \
+              --glob '!.git/**' --glob '!node_modules/**' \
+              --glob '!dist/**' --glob '!dist-cli/**' --glob '!dist-electron/**' \
+              --glob '!release/**' --glob '!docs/.vitepress/dist/**' \
+              --glob '!docs/.vitepress/cache/**' \
+              "$legacy_pattern" . || true)"
+          else
+            hits="$(grep -RIl \
+              --exclude-dir=.git --exclude-dir=node_modules \
+              --exclude-dir=dist --exclude-dir=dist-cli --exclude-dir=dist-electron \
+              --exclude-dir=release --exclude-dir=.vitepress \
+              -E "$legacy_pattern" . || true)"
+          fi
+          if [ -n "$hits" ]; then
+            printf 'Legacy brand strings found:\n%s\n' "$hits" >&2
+            exit 1
+          fi
+          echo 'No legacy brand strings found.'

@@ -164,8 +164,16 @@ async function lockAge(path: string) {
   let createdAt = stats.mtimeMs
   if (raw) {
     try {
-      const parsed = JSON.parse(raw) as { createdAt?: unknown }
+      const parsed = JSON.parse(raw) as { createdAt?: unknown; pid?: unknown }
       if (typeof parsed.createdAt === 'number' && Number.isFinite(parsed.createdAt)) createdAt = parsed.createdAt
+      if (typeof parsed.pid === 'number' && Number.isSafeInteger(parsed.pid) && parsed.pid > 0) {
+        try {
+          process.kill(parsed.pid, 0)
+          return 0
+        } catch (error) {
+          if ((error as NodeJS.ErrnoException).code === 'EPERM') return 0
+        }
+      }
     } catch {
       // A fresh lock file may be observed between create and write.
     }

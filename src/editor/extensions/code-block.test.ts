@@ -39,6 +39,14 @@ describe('code block', () => {
     expect(markdownToDoc(editor.schema, markdown).firstChild?.attrs.viewMode).toBe('preview')
   })
 
+  it('marks only huge code blocks for layout isolation', () => {
+    const small = editorWithCode('<pre data-language="typescript"><code>const x = 1</code></pre>')
+    expect(small.view.dom.querySelector('pre')).not.toHaveAttribute('data-long-code')
+    const huge = editorWithCode('<pre data-language="typescript"><code>' +
+      Array.from({ length: 2_000 }, (_, index) => `const value${index} = ${index};`).join('\n') + '</code></pre>')
+    expect(huge.view.dom.querySelector('pre')).toHaveAttribute('data-long-code', 'true')
+  })
+
   it('decorations: decorates TypeScript tokens at their document offsets and clears for plain text', () => {
     const editor = editorWithCode('<p>Lead</p><pre data-language="typescript"><code>const x = 1</code></pre>')
     const { doc } = editor.state
@@ -70,6 +78,7 @@ describe('deferred large code highlighting', () => {
         content: [{ type: 'text', text: script }] }] },
     })
     try {
+      expect(current.view.dom.querySelector('pre')).toHaveAttribute('data-long-code', 'true')
       await vi.advanceTimersByTimeAsync(140)
       expect(replies).toHaveLength(1)
       const start = process.hrtime.bigint()

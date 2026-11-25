@@ -1,4 +1,4 @@
-import type { ImageMime } from '../../workspace/asset-format'
+import type { ImageMime } from '../../workspace/asset-format.js'
 
 /** Read the canvas dimensions before passing untrusted bytes to a bitmap decoder. */
 export function imageHeaderSize(bytes: Uint8Array, mime: ImageMime): { width: number; height: number } | null {

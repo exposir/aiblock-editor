@@ -2,9 +2,10 @@ import { mkdtemp, mkdir, readFile, readdir, rm, stat, truncate, writeFile } from
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import fc from 'fast-check'
-import { describe, expect, it, onTestFinished } from 'vitest'
-import { decideNavigation, developmentUrl, externalUrl, isAppDocument } from './security.js'
-import { assetRequestId, createImageAssetFiles, createWorkspaceFiles, isSaveFileOptions, readMarkdownFile, writeAtomicText } from './storage.js'
+import { describe, expect, it, onTestFinished, vi } from 'vitest'
+import { createMainLogger, createRendererRecovery } from './logger.js'
+import { contentSecurityPolicy, decideNavigation, developmentUrl, externalUrl, isAppDocument } from './security.js'
+import { assetRequestId, createImageAssetFiles, createWorkspaceFiles, isSaveFileOptions, pruneOrphanImageAssets, readMarkdownFile, writeAtomicText } from './storage.js'
 import { testImage } from '../src/test/image-fixture.js'
 import { splitLegacyWorkspace } from '../src/workspace/workspace-format.js'
 import { parseWindowState, restoreWindowState } from './window-state.js'
@@ -101,6 +102,41 @@ describe('desktop navigation policy', () => {
   })
 })
 
+describe('desktop document CSP', () => {
+  // @partition permissions: production resources and development loopback HMR
+  function directives(dev: boolean) {
+    return new Map(contentSecurityPolicy(dev).split('; ').map(directive => {
+      const [name, ...sources] = directive.split(' ')
+      return [name, sources]
+    }))
+  }
+
+  it('permits packaged resources, blob workers and rich document images while denying unsafe scripts and frames', () => {
+    const policy = directives(false)
+    expect(policy.get('script-src')).toEqual(["'self'"])
+    expect(policy.get('worker-src')).toEqual(["'self'", 'blob:'])
+    expect(policy.get('style-src')).toContain("'unsafe-inline'")
+    expect(policy.get('img-src')).toEqual(expect.arrayContaining(['aiblock-asset:', 'blob:', 'data:', 'https:', 'http:']))
+    expect(policy.get('font-src')).toEqual(["'self'", 'data:'])
+    expect(policy.get('connect-src')).toEqual(["'self'", 'aiblock-asset:', 'blob:'])
+    for (const name of ['frame-ancestors', 'object-src']) expect(policy.get(name)).toEqual(["'none'"])
+    expect(policy.get('base-uri')).toEqual(["'self'"])
+    expect(policy.get('default-src')).toEqual(["'self'"])
+  })
+
+  it('opens only loopback script and HMR connections in development', () => {
+    const dev = directives(true)
+    expect(dev.get('script-src')).toEqual(["'self'", 'http://127.0.0.1:*'])
+    expect(dev.get('connect-src')).toEqual(["'self'", 'aiblock-asset:', 'blob:', 'http://127.0.0.1:*', 'ws://127.0.0.1:*'])
+    dev.delete('script-src')
+    dev.delete('connect-src')
+    const production = directives(false)
+    production.delete('script-src')
+    production.delete('connect-src')
+    expect(dev).toEqual(production)
+  })
+})
+
 async function profile() {
   const directory = await mkdtemp(join(tmpdir(), 'aiblock-editor-test-'))
   onTestFinished(() => rm(directory, { recursive: true, force: true }))
@@ -111,6 +147,81 @@ async function profile() {
     workspace: createWorkspaceFiles(directory),
   }
 }
+
+describe('desktop renderer recovery', () => {
+  // @partition exits: clean, repeated, and outside the crash window
+  // @partition choices: logs preserve a recovery path, reload and quit require a decision
+  const crash = { reason: 'crashed', exitCode: 3 }
+
+  async function recovery() {
+    const { directory } = await profile()
+    const logger = createMainLogger(directory)
+    const actions = {
+      available: vi.fn(() => true),
+      prompt: vi.fn<(repeated: boolean) => Promise<'reload' | 'logs' | 'quit'>>().mockResolvedValue('reload'),
+      openLogs: vi.fn(async () => {}),
+      reload: vi.fn(),
+      quit: vi.fn(),
+    }
+    let now = 0
+    return {
+      actions, handle: createRendererRecovery(logger, actions, () => now),
+      time: (value: number) => { now = value },
+      log: () => readFile(join(logger.directory, 'main.log'), 'utf8'),
+    }
+  }
+
+  it('logs a clean exit and a crash but only prompts after the crash', async () => {
+    const { actions, handle, log } = await recovery()
+    await handle({ reason: 'clean-exit', exitCode: 0 })
+    expect(actions.prompt).not.toHaveBeenCalled()
+    await handle(crash)
+    expect(actions.prompt).toHaveBeenCalledExactlyOnceWith(false)
+    expect(actions.reload).toHaveBeenCalledOnce()
+    expect((await log()).trimEnd().split('\n').map(line => JSON.parse(line))).toMatchObject([
+      { context: 'render-process-gone', level: 'info', detail: expect.stringContaining('clean-exit') },
+      { context: 'render-process-gone', level: 'error', detail: expect.stringContaining('exitCode: 3') },
+    ])
+  })
+
+  it('marks a crash at ten seconds as repeated and resets the default after a quiet interval', async () => {
+    const { actions, handle, time } = await recovery()
+    await handle(crash)
+    time(10_000)
+    actions.prompt.mockResolvedValueOnce('quit')
+    await handle(crash)
+    expect(actions.prompt).toHaveBeenLastCalledWith(true)
+    expect(actions.reload).toHaveBeenCalledOnce()
+    expect(actions.quit).toHaveBeenCalledOnce()
+    time(20_001)
+    await handle(crash)
+    expect(actions.prompt).toHaveBeenLastCalledWith(false)
+  })
+
+  it('opens logs and waits for another choice before reloading', async () => {
+    const { actions, handle } = await recovery()
+    actions.prompt.mockResolvedValueOnce('logs')
+    await handle(crash)
+    expect(actions.openLogs).toHaveBeenCalledOnce()
+    expect(actions.prompt).toHaveBeenCalledTimes(2)
+    expect(actions.reload).toHaveBeenCalledOnce()
+    expect(actions.quit).not.toHaveBeenCalled()
+  })
+
+  it('does not stack crash dialogs or act on a response after the window closes', async () => {
+    const { actions, handle, log } = await recovery()
+    let answer!: (choice: 'reload') => void
+    actions.prompt.mockImplementationOnce(() => new Promise(resolve => { answer = resolve }))
+    const first = handle(crash)
+    await handle(crash)
+    expect(actions.prompt).toHaveBeenCalledOnce()
+    actions.available.mockReturnValue(false)
+    answer('reload')
+    await first
+    expect(actions.reload).not.toHaveBeenCalled()
+    expect((await log()).trimEnd().split('\n')).toHaveLength(2)
+  })
+})
 
 const a = 'ec6db70c-08ab-426f-ad6b-fa341659b64a'
 const b = '861cf04e-ea85-41dc-af60-de823714fd21'
@@ -125,6 +236,42 @@ const legacyPages = [a, b].map((id, order) => ({
 }))
 const legacy = JSON.stringify({ activePageId: b, pages: legacyPages, demoVersion: 2 })
 const seed = splitLegacyWorkspace(legacy)!
+
+describe('desktop asset pruning', () => {
+  // @partition retention: live, trash, grace and suspended editor
+  // @partition safety: missing or malformed shard aborts before removal
+  it('retention: keeps references in trash and the editor, removes aged orphans after reference removal', async () => {
+    const { directory, workspace } = await profile()
+    const assets = createImageAssetFiles(directory)
+    const image = testImage()
+    const [live, trash, orphan, editing] = await Promise.all([0, 1, 2, 3].map(tag =>
+      assets.save({ ...image, bytes: Uint8Array.from([...image.bytes, tag]) })))
+    const index = { ...seed.index, activePageId: a, pages: [seed.index.pages[0]!], trash: [{ ...seed.index.pages[1]!, deletedAt: 3 }] }
+    const pages = [live!, trash!].map((asset, i) => ({
+      ...seed.pages[i]!, content: { type: 'doc', content: [{ type: 'imageBlock', attrs: { src: 'asset:' + asset.id } }] },
+    }))
+    await workspace.commit({ index, pages, removedPageIds: [] })
+    await expect(pruneOrphanImageAssets(workspace, assets, undefined)).resolves.toEqual({ removedCount: 0, keptCount: 4 })
+    await expect(pruneOrphanImageAssets(workspace, assets, { graceMs: 0, protectedIds: [editing!.id] }))
+      .resolves.toEqual({ removedCount: 1, keptCount: 3 })
+    expect(await assets.readMetadata([live!.id, trash!.id, orphan!.id, editing!.id])).toEqual([live, trash, null, editing])
+    await workspace.commit({ index: { ...index, trash: [] }, pages: [], removedPageIds: [b] })
+    await expect(pruneOrphanImageAssets(workspace, assets, { graceMs: 0, protectedIds: [editing!.id] }))
+      .resolves.toEqual({ removedCount: 1, keptCount: 2 })
+  })
+
+  it.each(['missing', 'invalid JSON', 'invalid node'])('safety: preserves all images when a trash shard is %s', async damage => {
+    const { directory, pagesPath, workspace } = await profile()
+    const assets = createImageAssetFiles(directory)
+    const orphan = await assets.save(testImage())
+    const index = { ...seed.index, activePageId: a, pages: [seed.index.pages[0]!], trash: [{ ...seed.index.pages[1]!, deletedAt: 3 }] }
+    await workspace.commit({ index, pages: [seed.pages[0]!], removedPageIds: [] })
+    if (damage !== 'missing') await writeFile(join(pagesPath, b + '.json'), damage === 'invalid JSON'
+      ? '{' : JSON.stringify({ ...seed.pages[1], content: { type: 'doc', content: [null] } }))
+    await expect(pruneOrphanImageAssets(workspace, assets, { graceMs: 0 })).rejects.toThrow()
+    expect(await assets.readMetadata([orphan.id])).toEqual([orphan])
+  })
+})
 
 describe('desktop workspace and files', () => {
   it('migrates UTF-8 legacy data into a metadata index and independent shards without loss', async () => {

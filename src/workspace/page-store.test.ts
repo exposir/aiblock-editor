@@ -5,10 +5,10 @@ import { createEditorExtensions } from '../editor/extensions'
 import { createDemoWorkspace } from './demo-workspace'
 import {
   DEFAULT_PAGE_TITLE, activatePage, addPage, checkedPageContent, copyPage,
-  createWorkspace, formatPageHash, hasPageContent, importMarkdownPage, movePage, pageAncestors,
-  parseLegacyBlockHash, parsePageHash, removePage, updatePage,
+  createWorkspace, findPage, formatPageHash, hasPageContent, importMarkdownPage, movePage, pageAncestors,
+  emptyTrash, parseLegacyBlockHash, parsePageHash, purgeTrashedPage, removePage, restoreTrashedPage, trashPage, updatePage,
 } from './page-store'
-import { isWorkspaceIndex, pageMetadata, splitLegacyWorkspace } from './workspace-format'
+import { isWorkspaceCommit, isWorkspaceIndex, pageMetadata, splitLegacyWorkspace } from './workspace-format'
 
 const schema = getSchema(createEditorExtensions())
 const identity = (index: number) => ({ id: `3a32ec65-f076-4830-8110-${String(index).padStart(12, '0')}`, now: index })
@@ -23,6 +23,51 @@ const content = { type: 'doc', content: [{ type: 'paragraph', content: [{ type: 
 function twoPages() {
   return addPage(createWorkspace(identity(1)), identity(2), { parentId: root, title: '验收清单' })
 }
+
+describe('回收站', () => {
+  // @partition lifecycle: subtree, fallback root, partial restore and physical removal
+  // @partition validation: legacy index, metadata integrity and case-insensitive uniqueness
+  it('lifecycle: 软删整棵树保留评论及原父级，恢复时重建层级', () => {
+    const original = updatePage(twoPages(), child, { content, comments: [note] }, 8)
+    const trashed = trashPage(original, root, identity(3))
+    expect(trashed.activePageId).toBe(identity(3).id)
+    expect(trashed.pages.map(page => page.id)).toEqual([identity(3).id])
+    expect(trashed.trash).toMatchObject([{ id: root, deletedAt: 3 }, { id: child, parentId: root, comments: [note], deletedAt: 3 }])
+    expect(trashed.trash?.every(page => !Object.hasOwn(page, 'content'))).toBe(true)
+    const restored = restoreTrashedPage(trashed, root)
+    expect(restored.trash).toEqual([])
+    expect(findPage(restored, child)).toEqual(pageMetadata(findPage(original, child)!))
+  })
+
+  it('lifecycle: 单独恢复子页时提升到根尾，永久删除只影响仍在回收站的子树', () => {
+    const grandchild = identity(3).id
+    const docs = addPage(twoPages(), identity(3), { parentId: child })
+    const trash = trashPage(docs, root, identity(4))
+    const restored = restoreTrashedPage(trash, child)
+    expect(findPage(restored, child)).toMatchObject({ parentId: null, order: 1 })
+    expect(findPage(restored, grandchild)?.parentId).toBe(child)
+    expect(purgeTrashedPage(trash, root).removedPageIds).toEqual([root, child, grandchild])
+    const result = purgeTrashedPage(restored, root)
+    expect(result.removedPageIds).toEqual([root])
+    expect(result.workspace.trash).toEqual([])
+    expect(emptyTrash(trash).removedPageIds).toEqual([root, child, grandchild])
+  })
+
+  it('validation: 接受旧索引及回收站分片，拒绝重复 ID、正文、无效时间和对保留页的物理删除', () => {
+    const [first, second] = twoPages().pages.map(pageMetadata)
+    const old = { version: 2, activePageId: root, pages: [first!] }
+    const removed = { ...second!, deletedAt: 4 }
+    const index = { ...old, trash: [removed] }
+    expect(isWorkspaceIndex(old)).toBe(true)
+    expect(isWorkspaceCommit({ index, pages: [{ id: child, content, updatedAt: 2 }], removedPageIds: [] })).toBe(true)
+    expect(isWorkspaceCommit({ index, pages: [], removedPageIds: [child.toUpperCase()] })).toBe(false)
+    for (const trash of [
+      [{ ...first, id: root.toUpperCase(), deletedAt: 4 }],
+      [removed, { ...removed, id: child.toUpperCase() }],
+      [{ ...removed, content }], [{ ...removed, deletedAt: Infinity }],
+    ]) expect(isWorkspaceIndex({ ...old, trash })).toBe(false)
+  })
+})
 
 describe('页面操作', () => {
   /*

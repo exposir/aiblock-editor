@@ -147,10 +147,12 @@ describe('inline math viewport rendering', () => {
       extensions: createEditorExtensions(),
       content: { type: 'doc', content: [{ type: 'paragraph', content: [{ type: 'inlineMath', attrs: { latex: 'x^2' } }] }] },
     })
+    document.body.append(editor.view.dom)
     try {
       const formula = editor.view.dom.querySelector('[data-inline-math]')!
       expect(formula).toHaveTextContent('x^2')
       expect(formula.querySelector('.katex')).toBeNull()
+      await viewport.flush()
       viewport.show(formula, true, 300)
       await waitFor(() => expect(formula.querySelector('.katex')).not.toBeNull())
     } finally {

@@ -60,7 +60,7 @@ describe('WorkspaceNavigation', () => {
   it('search: 按标题过滤，保留父页路径，清空恢复全部页面', async () => {
     const user = userEvent.setup()
     render(<WorkspaceNavigation {...props()} />)
-    const search = screen.getByRole('searchbox', { name: '按标题查找页面' })
+    const search = screen.getByRole('searchbox', { name: '查找页面标题或正文' })
     await user.type(search, 'Release'.replace('Release', '接口'))
     expect(screen.getByRole('button', { name: '接口与发布规则' })).toBeInTheDocument()
     expect(screen.getByRole('button', { name: '文档协作与发布手册' })).toBeInTheDocument()
@@ -72,7 +72,7 @@ describe('WorkspaceNavigation', () => {
   it('search: 无匹配显示提示，不渲染页面树', async () => {
     const user = userEvent.setup()
     render(<WorkspaceNavigation {...props()} />)
-    await user.type(screen.getByRole('searchbox', { name: '按标题查找页面' }), '不存在')
+    await user.type(screen.getByRole('searchbox', { name: '查找页面标题或正文' }), '不存在')
     expect(screen.getByText('没有匹配的页面')).toBeInTheDocument()
     expect(screen.queryByRole('navigation', { name: '页面树' })).not.toBeInTheDocument()
   })

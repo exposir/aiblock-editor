@@ -22,7 +22,7 @@
 - **用 Markdown 交换内容。** 读取、导出或复制整页 Markdown，也能直接把符合 Markdown 结构的纯文本粘贴成块。
 - **在文档里画图和写公式。** 预览 Mermaid 图表和 KaTeX 公式，切换源码和预览视图，也可把图表导出为 SVG。
 - **批量贴图。** 一次最多插入 200 张 PNG、JPEG、GIF 或 WebP，整批可以一步撤销。
-- **从终端编辑桌面文档。** 用 `aiblock-doc` 读取页面、创建笔记或追加 Markdown。打开的桌面端能感知变更，并会提示写入冲突。
+- **从终端编辑桌面文档。** 用 `aiblock-doc` 搜索和读取页面，创建、追加或整页替换 Markdown，导入本地图片并清理未引用资产。打开的桌面端能感知变更，并会提示写入冲突。
 
 ## 快速开始
 
@@ -51,11 +51,14 @@ CLI 与桌面端共用工作区。macOS 的默认工作区是 `~/Library/Applica
 ```sh
 pnpm cli:build
 pnpm cli -- list
+pnpm cli -- search '会议记录'
 pnpm cli -- get "$page_id"
 pnpm cli -- create --title '会议记录' --markdown notes.md
+pnpm cli -- add-image screenshot.png
+pnpm cli -- gc --dry-run
 ```
 
-先从 `list` 结果取得页面 ID，再替换 `"$page_id"`。创建页面的示例从当前目录读取 `notes.md`。
+先从 `list` 或 `search` 结果取得页面 ID，再替换 `"$page_id"`。创建页面的示例从当前目录读取 `notes.md`。
 
 [Agent Skill](skills/aiblock-doc/SKILL.md) 说明如何让 AI 工具定位工作区、读写页面和处理版本冲突。[CLI 在线使用指南](https://exposir.github.io/aiblock-editor/guide/cli-and-skill)
 

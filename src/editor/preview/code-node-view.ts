@@ -1,7 +1,10 @@
 import { DOMSerializer } from '@tiptap/pm/model'
 import type { Node as ProseMirrorNode } from '@tiptap/pm/model'
 import type { NodeView } from '@tiptap/pm/view'
+import type { EditorView } from '@tiptap/pm/view'
+import { registerCodeBlockAnchor } from '../components/code-block-anchors'
 import { codeLanguage, isPreviewLanguage, viewModeFor } from '../extensions/code-languages'
+import { isHugeCode } from '../extensions/long-code-highlight'
 import { attachCodePreview } from './code-preview'
 
 function sourceDOM(owner: Document, node: ProseMirrorNode) {
@@ -23,6 +26,7 @@ function syncAttributes(element: HTMLElement, attrs: NamedNodeMap) {
 export function codeNodeView(
   owner: Document,
   initial: ProseMirrorNode,
+  view: EditorView,
 ): NodeView {
   const rich = isPreviewLanguage(codeLanguage(initial.attrs.language))
   const { pre, code } = sourceDOM(owner, initial)
@@ -30,6 +34,7 @@ export function codeNodeView(
   const panel = rich ? owner.createElement('div') : null
   const preview = panel && attachCodePreview(panel)
   let node = initial
+  let unregister = registerCodeBlockAnchor(view, node, dom)
 
   if (panel) {
     dom.className = 'rich-code-block'
@@ -44,7 +49,10 @@ export function codeNodeView(
       syncAttributes(pre, replacement.pre.attributes)
       syncAttributes(code, replacement.code.attributes)
     }
+    if (isHugeCode(next)) pre.dataset.longCode = 'true'
+    else delete pre.dataset.longCode
     if (!panel) return
+    pre.dataset.codeSource = ''
     const language = codeLanguage(next.attrs.language)
     const mode = viewModeFor(language, next.attrs.viewMode)
     dom.dataset.viewMode = mode
@@ -55,7 +63,6 @@ export function codeNodeView(
       dom.setAttribute(attr, value)
       pre.removeAttribute(attr)
     }
-    pre.dataset.codeSource = ''
     panel.hidden = mode === 'code'
     pre.hidden = mode === 'preview'
     preview?.update(mode !== 'code' && isPreviewLanguage(language) ? language : undefined, next.textContent)
@@ -67,13 +74,21 @@ export function codeNodeView(
     contentDOM: code,
     update(next) {
       if (next.type !== node.type || rich !== isPreviewLanguage(codeLanguage(next.attrs.language))) return false
-      if (!node.eq(next)) apply(next)
+      const changed = !node.eq(next)
+      if (changed) apply(next)
       node = next
+      if (changed) {
+        unregister()
+        unregister = registerCodeBlockAnchor(view, next, dom)
+      }
       return true
     },
     ignoreMutation(mutation) {
       return mutation.type !== 'selection' && !code.contains(mutation.target)
     },
-    destroy() { preview?.destroy() },
+    destroy() {
+      unregister()
+      preview?.destroy()
+    },
   }
 }

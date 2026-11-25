@@ -1,4 +1,7 @@
 import { WORKSPACE_STORAGE_KEY } from './page-store'
+import { isImageAssetMetadata } from './asset-format'
+import type { ImageAssetMetadata } from './asset-format'
+import { readWorkspaceAssetReferences, selectOrphanAssetIds } from './asset-gc'
 import { isPageId, isWorkspaceCommit, isWorkspaceIndex, splitLegacyWorkspace } from './workspace-format'
 import type { PageShard, WorkspaceCommit, WorkspaceIndex, WorkspacePersistence } from './workspace-format'
 
@@ -39,6 +42,30 @@ export function idbCommit(transaction: IDBTransaction): Promise<void> {
   return new Promise((resolve, reject) => {
     transaction.oncomplete = () => resolve()
     transaction.onabort = () => reject(transaction.error ?? new Error('Workspace transaction aborted'))
+  })
+}
+
+export function listIndexedAssetMetadata(store: IDBObjectStore, useLastSave = false): Promise<ImageAssetMetadata[]> {
+  return new Promise((resolve, reject) => {
+    const entries: ImageAssetMetadata[] = []
+    const request = store.openCursor()
+    request.onerror = () => reject(request.error)
+    request.onsuccess = () => {
+      const cursor = request.result
+      if (!cursor) { resolve(entries); return }
+      const metadata: unknown = cursor.value?.metadata
+      const lastSavedAt: unknown = cursor.value?.lastSavedAt
+      if (!isImageAssetMetadata(metadata) || cursor.key !== metadata.id) {
+        reject(new Error('Invalid stored image asset'))
+        return
+      }
+      if (lastSavedAt !== undefined && (typeof lastSavedAt !== 'number' || !Number.isFinite(lastSavedAt))) {
+        reject(new Error('Invalid image save timestamp'))
+        return
+      }
+      entries.push(useLastSave && lastSavedAt !== undefined ? { ...metadata, createdAt: lastSavedAt } : metadata)
+      cursor.continue()
+    }
   })
 }
 
@@ -98,7 +125,7 @@ export function browserWorkspaceStorage(
       const fallback = fallbackRaw === null ? null : verifiedIndex(JSON.parse(fallbackRaw))
       const legacy = !fallback && raw ? splitLegacyWorkspace(raw) : null
       if (!legacy && !fallback) return null
-      const pages = legacy?.pages ?? fallback!.pages.map(page =>
+      const pages = legacy?.pages ?? [...fallback!.pages, ...fallback!.trash ?? []].map(page =>
         JSON.parse(storage!.getItem(fallbackPage(page.id)) ?? 'null') as PageShard)
       const index = legacy?.index ?? fallback!
       if (!isWorkspaceCommit({ index, pages, removedPageIds: [] })) throw new Error('Invalid migrated workspace')
@@ -147,6 +174,27 @@ export function browserWorkspaceStorage(
         throw error
       }
       await finished
+    },
+    async pruneOrphanAssets(graceMs, protectedIds) {
+      if (graceMs !== undefined && (!Number.isFinite(graceMs) || graceMs < 0)) throw new TypeError('Invalid asset grace period')
+      const db = await database()
+      const transaction = db.transaction(['meta', 'pages', 'assets'], 'readwrite')
+      const finished = idbCommit(transaction)
+      try {
+        const index = verifiedIndex(await idbResult(transaction.objectStore('meta').get(indexKey)))
+        const pages = transaction.objectStore('pages')
+        const referenced = await readWorkspaceAssetReferences(index, async id => await idbResult(pages.get(id)) ?? null, protectedIds)
+        const assets = transaction.objectStore('assets')
+        const stored = await listIndexedAssetMetadata(assets, true)
+        const orphans = selectOrphanAssetIds(stored, referenced, Date.now(), graceMs)
+        for (const id of orphans) assets.delete(id)
+        await finished
+        return { removedCount: orphans.length, keptCount: stored.length - orphans.length }
+      } catch (error) {
+        try { transaction.abort() } catch { /* Already finished. */ }
+        await finished.catch(() => {})
+        throw error
+      }
     },
   }
 }

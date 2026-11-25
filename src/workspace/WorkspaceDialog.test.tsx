@@ -67,7 +67,9 @@ describe('WorkspaceDialog', () => {
     const user = userEvent.setup()
     const confirm = vi.fn()
     render(dialog({ kind: 'delete', pageId: workspace.pages[0]!.id }, { onConfirm: confirm }))
-    expect(screen.getByRole('dialog', { name: '删除页面' })).toHaveAccessibleDescription('将永久删除「文档协作与发布手册」及其 2 个子页面。')
+    expect(screen.getByRole('dialog', { name: '删除页面' })).toHaveAccessibleDescription(
+      '将「文档协作与发布手册」及其 2 个子页面移入回收站。可在回收站恢复。',
+    )
     await user.click(screen.getByRole('button', { name: '取消' }))
     expect(confirm).not.toHaveBeenCalled()
   })
@@ -77,7 +79,7 @@ describe('WorkspaceDialog', () => {
     const confirm = vi.fn()
     render(dialog({ kind: 'reset' }, { onConfirm: confirm }))
     expect(screen.getByRole('dialog', { name: '重置示例工作区' })).toHaveAccessibleDescription(
-      '本地保存的页面和评论将被清除，并恢复五个示例页面。',
+      '本地保存的页面、评论和回收站内容将被清除，并恢复五个示例页面。',
     )
     await user.click(screen.getByRole('button', { name: '确认重置' }))
     expect(confirm).toHaveBeenCalledWith('')

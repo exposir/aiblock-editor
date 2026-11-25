@@ -50,7 +50,7 @@ export const CodeBlock = CodeBlockSchema.extend({
   },
 
   addNodeView() {
-    return ({ node, view }) => codeNodeView(view.dom.ownerDocument, node)
+    return ({ node, view }) => codeNodeView(view.dom.ownerDocument, node, view)
   },
 
   addProseMirrorPlugins() {

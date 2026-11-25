@@ -15,6 +15,16 @@ export function isLongCode(node: ProseMirrorNode) {
   return false
 }
 
+export function isHugeCode(node: ProseMirrorNode) {
+  if (node.content.size > 100_000) return true
+  const text = node.textContent
+  let lines = 1
+  for (let index = text.indexOf('\n'); index !== -1; index = text.indexOf('\n', index + 1)) {
+    if (++lines >= 2_000) return true
+  }
+  return false
+}
+
 interface TokenWindow { from: number; to: number }
 
 export function windowOfTokens(tokens: readonly CodeToken[], offset: number, previous?: TokenWindow): TokenWindow | null {

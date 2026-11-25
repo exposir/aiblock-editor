@@ -19,10 +19,15 @@ export interface PageShard {
   readonly updatedAt: number
 }
 
+export interface TrashedPageMetadata extends PageMetadata {
+  readonly deletedAt: number
+}
+
 export interface WorkspaceIndex {
   readonly version: 2
   readonly activePageId: string
   readonly pages: readonly PageMetadata[]
+  readonly trash?: readonly TrashedPageMetadata[]
   readonly demoVersion?: number
 }
 
@@ -87,30 +92,61 @@ function isTree(activePageId: string, pages: readonly PageMetadata[]): boolean {
   return visited.size === pages.length && visited.has(activePageId)
 }
 
+function isTrash(value: unknown, pages: readonly PageMetadata[]): boolean {
+  if (value === undefined) return true
+  if (!Array.isArray(value)) return false
+  const ids = new Set(pages.map(page => page.id.toLowerCase()))
+  const parents = new Map<string, string | null>()
+  for (const page of value) {
+    if (!isRecord(page) || !isPageMetadata(page) || !Number.isFinite(page.deletedAt) || Object.hasOwn(page, 'content')) return false
+    const id = page.id.toLowerCase()
+    if (ids.has(id)) return false
+    ids.add(id)
+    parents.set(id, page.parentId?.toLowerCase() ?? null)
+  }
+  const checked = new Set<string>()
+  for (const id of parents.keys()) {
+    const path = new Set<string>()
+    let next: string | null | undefined = id
+    while (next && parents.has(next) && !checked.has(next)) {
+      if (path.has(next)) return false
+      path.add(next)
+      next = parents.get(next)
+    }
+    for (const ancestor of path) checked.add(ancestor)
+  }
+  return true
+}
+
 export function isWorkspaceIndex(value: unknown): value is WorkspaceIndex {
   return isRecord(value) && value.version === 2 && isPageId(value.activePageId) &&
     (value.demoVersion === undefined || typeof value.demoVersion === 'number' &&
       Number.isSafeInteger(value.demoVersion) && value.demoVersion > 0) &&
     Array.isArray(value.pages) && value.pages.length > 0 &&
-    value.pages.every(page => isPageMetadata(page) && !Object.hasOwn(page, 'content')) &&
-    isTree(value.activePageId, value.pages)
+    Array.from(value.pages).every(page => isPageMetadata(page) && !Object.hasOwn(page, 'content')) &&
+    isTree(value.activePageId, value.pages) && isTrash(value.trash, value.pages)
 }
 
 export function isWorkspaceCommit(value: unknown): value is WorkspaceCommit {
   if (!isRecord(value) || (value.index !== undefined && !isWorkspaceIndex(value.index)) ||
-      !Array.isArray(value.pages) || !value.pages.every(isPageShard) ||
+      !Array.isArray(value.pages) || !Array.from(value.pages).every(isPageShard) ||
       !Array.isArray(value.removedPageIds) || !Array.from(value.removedPageIds).every(isPageId)) return false
   const index = value.index as WorkspaceIndex | undefined
   if (!index && value.removedPageIds.length) return false
-  const live = index && new Set(index.pages.map(page => page.id))
+  const retained = index && new Set([...index.pages, ...index.trash ?? []].map(page => page.id))
   const written = new Set<string>()
   for (const page of value.pages) {
     const id = page.id.toLowerCase()
-    if (written.has(id) || (live && !live.has(page.id))) return false
+    if (written.has(id) || (retained && !retained.has(page.id))) return false
     written.add(id)
   }
-  const liveFiles = index && new Set(index.pages.map(page => page.id.toLowerCase()))
-  return value.removedPageIds.every(id => !written.has(id.toLowerCase()) && !liveFiles?.has(id.toLowerCase()))
+  const retainedFiles = retained && new Set([...retained].map(id => id.toLowerCase()))
+  return value.removedPageIds.every(pageId => {
+    const id = pageId.toLowerCase()
+    if (written.has(id) || retainedFiles?.has(id)) return false
+    written.add(id)
+    return true
+  })
 }
 
 export function splitLegacyWorkspace(raw: string): { index: WorkspaceIndex; pages: PageShard[] } | null {
@@ -161,8 +197,15 @@ export interface WorkspaceCommitResult {
 export interface WorkspacePersistence {
   readIndex(): Promise<WorkspaceIndex | null>
   readPage(id: string): Promise<PageShard | null>
+  peekPage?(id: string): Promise<PageShard | null>
   commit(changes: WorkspaceCommit, options?: WorkspaceCommitOptions): Promise<WorkspaceCommitResult | void>
+  pruneOrphanAssets?(graceMs?: number, protectedIds?: readonly string[]): Promise<AssetPruneResult>
   onClosing?(listener: () => WorkspaceCloseResult | Promise<WorkspaceCloseResult>): () => void
   onExternalChange?(listener: (change: WorkspaceExternalChange) => void): () => void
+}
+
+export interface AssetPruneResult {
+  readonly removedCount: number
+  readonly keptCount: number
 }
 

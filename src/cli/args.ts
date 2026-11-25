@@ -8,7 +8,7 @@ export interface CliArguments {
   readonly help: boolean
 }
 
-const valueFlags = new Set(['workspace', 'title', 'parent', 'icon', 'markdown', 'if-match', 'format'])
+const valueFlags = new Set(['workspace', 'title', 'parent', 'icon', 'markdown', 'if-match', 'format', 'limit', 'grace-ms'])
 const booleanFlags = new Set(['help', 'dry-run', 'activate'])
 
 export function parseArguments(argv: readonly string[]): CliArguments {

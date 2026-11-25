@@ -8,6 +8,9 @@ import { useAnchoredPosition } from '../editor/components/editor-ui'
 import { findPage, pageAncestors, pagesByParent, pageTitle } from './page-store'
 import type { WorkspaceState } from './page-store'
 import type { PageMetadata } from './workspace-format'
+import type { JSONContent } from '@tiptap/core'
+import { searchWorkspacePages } from './workspace-search'
+import type { WorkspaceSearchHit } from './workspace-search'
 
 export type NavigationView = 'pages' | 'outline'
 export type PageAction = 'rename' | 'duplicate' | 'move' | 'export' | 'delete'
@@ -37,6 +40,10 @@ interface NavigationProps {
   readonly onCreate: (parentId: string | null) => void
   readonly onIcon: (id: string, icon: string) => void
   readonly onAction: (action: PageAction, id: string) => void
+  readonly searchContent?: (id: string) => Promise<JSONContent | null>
+  readonly onRestore?: (id: string) => void
+  readonly onPurge?: (id: string) => void
+  readonly onEmptyTrash?: () => void
 }
 
 interface OpenPopover {
@@ -116,13 +123,21 @@ function matchingPages(workspace: WorkspaceState<PageMetadata>, query: string): 
   return matches
 }
 
-export function WorkspaceNavigation({ workspace, view, open, editor, onView, onClose, onActivate, onCreate, onIcon, onAction }: NavigationProps) {
+export function WorkspaceNavigation({ workspace, view, open, editor, onView, onClose, onActivate, onCreate, onIcon, onAction,
+  searchContent, onRestore, onPurge, onEmptyTrash }: NavigationProps) {
   const [query, setQuery] = useState('')
   const [collapsed, setCollapsed] = useState<ReadonlySet<string>>(() => new Set())
   const [popover, setPopover] = useState<OpenPopover | null>(null)
+  const [bodySearch, setBodySearch] = useState<{
+    query: string; pages: readonly PageMetadata[]; hits: readonly WorkspaceSearchHit[]; failed: boolean
+  } | null>(null)
   const popoverId = useId()
   const index = useMemo(() => pagesByParent(workspace), [workspace.pages])
-  const visible = useMemo(() => matchingPages(workspace, query.trim().toLocaleLowerCase()), [workspace.pages, query])
+  const keyword = query.trim().toLowerCase()
+  const visible = useMemo(() => matchingPages(workspace, keyword), [workspace.pages, keyword])
+  const bodyResults = bodySearch?.query === keyword && bodySearch.pages === workspace.pages ? bodySearch : null
+  const searching = keyword && searchContent && !bodyResults
+  const trash = workspace.trash ?? []
   const activePath = pageAncestors(workspace, workspace.activePageId).map(page => page.id).join('/')
   const popoverPage = popover && findPage(workspace, popover.pageId)
 
@@ -138,6 +153,26 @@ export function WorkspaceNavigation({ workspace, view, open, editor, onView, onC
 
   useEffect(() => { setPopover(null) }, [open, view, workspace.activePageId])
 
+  useEffect(() => {
+    if (!open || view !== 'pages' || !keyword || !searchContent) {
+      setBodySearch(null)
+      return
+    }
+    const controller = new AbortController()
+    const pages = workspace.pages
+    const timer = setTimeout(() => {
+      void searchWorkspacePages(pages, searchContent, keyword, { signal: controller.signal, limit: Infinity }).then(
+        hits => {
+          if (!controller.signal.aborted) setBodySearch({ query: keyword, pages, hits: hits.filter(hit => hit.match === 'body').slice(0, 50), failed: false })
+        },
+        () => {
+          if (!controller.signal.aborted) setBodySearch({ query: keyword, pages, hits: [], failed: true })
+        },
+      )
+    }, 150)
+    return () => { clearTimeout(timer); controller.abort() }
+  }, [open, view, keyword, searchContent, workspace.pages])
+
   function toggleBranch(id: string) {
     setPopover(null)
     setCollapsed(previous => {
@@ -151,6 +186,11 @@ export function WorkspaceNavigation({ workspace, view, open, editor, onView, onC
   function add(parentId: string | null) {
     setQuery('')
     onCreate(parentId)
+  }
+
+  function activateResult(id: string) {
+    setQuery('')
+    onActivate(id)
   }
 
   function togglePopover(anchor: HTMLButtonElement, pageId: string, kind: OpenPopover['kind']) {
@@ -211,14 +251,37 @@ export function WorkspaceNavigation({ workspace, view, open, editor, onView, onC
         </div>
         <label className="page-search">
           <Search size={15} aria-hidden="true" />
-          <input value={query} type="search" aria-label="按标题查找页面" placeholder="查找页面…"
+          <input value={query} type="search" aria-label="查找页面标题或正文" placeholder="查找页面…"
             onChange={event => { setQuery(event.target.value); setPopover(null) }} />
         </label>
         <div className="workspace-navigation-body">
-          {visible?.size === 0 ? <p className="sidebar-empty">没有匹配的页面</p> : <nav className="page-tree" aria-label="页面树">
+          {visible?.size !== 0 && <nav className="page-tree" aria-label="页面树">
             <ul>{rows(null, 0)}</ul>
           </nav>}
+          {searching && <p className="sidebar-empty" role="status">正在搜索正文…</p>}
+          {bodyResults?.failed && <p className="sidebar-empty" role="status">无法完成正文搜索。</p>}
+          {!!bodyResults?.hits.length && <section className="workspace-search-results" aria-label="正文匹配">
+            <h3>正文匹配</h3>
+            <ul>{bodyResults.hits.map(hit => <li key={hit.pageId}>
+              <button type="button" aria-label={`打开「${hit.title}」的正文匹配`} onClick={() => activateResult(hit.pageId)}>
+                <strong>{hit.title}</strong><span>{hit.snippet}</span>
+              </button>
+            </li>)}</ul>
+          </section>}
+          {visible?.size === 0 && !searching && !bodyResults?.failed && !bodyResults?.hits.length &&
+            <p className="sidebar-empty">没有匹配的页面</p>}
         </div>
+        {trash.length ? <details className="workspace-trash">
+          <summary><Trash2 size={14} aria-hidden="true" />回收站 <span>{trash.length}</span></summary>
+          <ul aria-label="已删除页面">
+            {trash.map(page => <li key={page.id}>
+              <span title={pageTitle(page)}>{page.icon} {pageTitle(page)}</span>
+              <button type="button" aria-label={`恢复「${pageTitle(page)}」`} onClick={() => onRestore?.(page.id)}>恢复</button>
+              <button type="button" aria-label={`彻底删除「${pageTitle(page)}」`} onClick={() => onPurge?.(page.id)}>彻底删除</button>
+            </li>)}
+          </ul>
+          <button type="button" className="workspace-trash-empty" onClick={onEmptyTrash}>清空回收站</button>
+        </details> : <p className="workspace-trash-muted">回收站为空</p>}
         <div className="page-count">{workspace.pages.length} 个页面</div>
         {popover && popoverPage && <PagePopover key={`${popover.kind}-${popover.pageId}`} popover={popover} page={popoverPage}
           id={popoverId} onClose={() => setPopover(null)} onIcon={onIcon} onAction={onAction} />}

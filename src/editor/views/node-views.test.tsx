@@ -204,6 +204,7 @@ describe('node views & floating block controls', () => {
       const item = editor.view.dom.querySelector('[data-type="taskItem"]')!
       const anchor = item.querySelector('.block-control-anchor')!
       expect(screen.queryByRole('checkbox')).toBeNull()
+      await viewport.flush()
       act(() => viewport.show(anchor, true, 300))
       expect(await screen.findByRole('checkbox')).toHaveAccessibleName('Task A')
       act(() => viewport.show(anchor, false, 300))

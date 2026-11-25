@@ -1,0 +1,195 @@
+name: Release
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Tag to build (defaults to the current ref)
+        required: false
+        type: string
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+env:
+  RELEASE_TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref }}
+          fetch-depth: 0
+
+      - name: Set up pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 12.21.0
+          run_install: false
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Type-check renderer
+        run: pnpm tsc --noEmit
+
+      - name: Type-check Electron
+        run: pnpm tsc --noEmit -p tsconfig.electron.json
+
+      - name: Test
+        run: pnpm test
+
+  build-mac:
+    needs: verify
+    runs-on: macos-14
+    timeout-minutes: 60
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref }}
+          fetch-depth: 0
+
+      - name: Set up pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 12.21.0
+          run_install: false
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Build renderer, Electron bundle and CLI
+        run: pnpm electron:build && pnpm cli:build
+
+      - name: Package macOS DMG and CLI archive
+        env:
+          CSC_LINK: ${{ secrets.CSC_LINK }}
+          CSC_KEY_PASSWORD: ${{ secrets.CSC_KEY_PASSWORD }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: |
+          set -euo pipefail
+          VERSION="${RELEASE_TAG#v}"
+          VERSION="${VERSION//[^A-Za-z0-9._-]/-}"
+          mkdir -p artifacts
+
+          if [ -n "${CSC_LINK:-}" ]; then
+            node --input-type=commonjs <<'NODE'
+          const fs = require('node:fs')
+          const path = require('node:path')
+          const pkg = JSON.parse(fs.readFileSync('package.json', 'utf8'))
+          const config = structuredClone(pkg.build)
+          config.directories = { ...config.directories, output: path.resolve('release') }
+          config.mac = {
+            ...config.mac,
+            icon: path.resolve('build/icon.icns'),
+            entitlements: path.resolve('build/entitlements.mac.plist'),
+            entitlementsInherit: path.resolve('build/entitlements.mac.plist'),
+            notarize: Boolean(process.env.APPLE_ID && process.env.APPLE_APP_SPECIFIC_PASSWORD && process.env.APPLE_TEAM_ID),
+          }
+          delete config.mac.identity
+          fs.writeFileSync(
+            path.join(process.env.RUNNER_TEMP, 'electron-builder-macos.json'),
+            JSON.stringify(config),
+          )
+          NODE
+            pnpm exec electron-builder \
+              --config "$RUNNER_TEMP/electron-builder-macos.json" \
+              --mac dmg --arm64
+          else
+            CSC_IDENTITY_AUTO_DISCOVERY=false \
+              pnpm exec electron-builder --mac dmg --arm64
+          fi
+
+          dmg="$(find release -maxdepth 1 -type f -name '*.dmg' | sed -n '1p')"
+          test -n "$dmg"
+          cp "$dmg" "artifacts/AIBlock-Editor-${VERSION}-arm64.dmg"
+          cp dist-cli/aiblock-doc.mjs artifacts/aiblock-doc.mjs
+          chmod +x artifacts/aiblock-doc.mjs
+
+          stage="$RUNNER_TEMP/aiblock-doc-${VERSION}"
+          rm -rf "$stage"
+          mkdir -p "$stage/skills"
+          cp dist-cli/aiblock-doc.mjs "$stage/"
+          chmod +x "$stage/aiblock-doc.mjs"
+          cp -R skills/aiblock-doc "$stage/skills/"
+          tar -czf "artifacts/aiblock-doc-${VERSION}.tar.gz" \
+            -C "$stage" aiblock-doc.mjs skills/aiblock-doc
+
+          (
+            cd artifacts
+            shasum -a 256 \
+              "AIBlock-Editor-${VERSION}-arm64.dmg" \
+              "aiblock-doc-${VERSION}.tar.gz" \
+              aiblock-doc.mjs > SHA256SUMS.txt
+          )
+
+      - name: Upload macOS artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: aiblock-editor-macos
+          path: artifacts/*
+          if-no-files-found: error
+          retention-days: 14
+
+  publish:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: build-mac
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Download macOS artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: aiblock-editor-macos
+          path: artifacts
+
+      - name: Publish GitHub Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          VERSION="${RELEASE_TAG#v}"
+          VERSION="${VERSION//[^A-Za-z0-9._-]/-}"
+          {
+            printf 'AIBlock Editor %s\n\n' "$VERSION"
+            printf 'Apple Silicon (arm64) macOS build and self-contained CLI archive.\n\n'
+            printf 'macOS first launch: if the app is blocked, right-click it and choose Open, or allow it in System Settings → Privacy & Security.\n\n'
+            printf 'CLI archive: aiblock-doc-%s.tar.gz contains aiblock-doc.mjs and skills/aiblock-doc/.\n\n' "$VERSION"
+            printf 'SHA-256 checksums:\n'
+            cat artifacts/SHA256SUMS.txt
+          } > release-notes.md
+
+          if gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
+            gh release upload "$RELEASE_TAG" artifacts/* --clobber
+          else
+            gh release create "$RELEASE_TAG" artifacts/* \
+              --title "AIBlock Editor ${VERSION}" \
+              --notes-file release-notes.md
+          fi

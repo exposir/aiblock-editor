@@ -12,12 +12,14 @@ const desktop: DesktopBridge = {
   setTheme: mode => ipcRenderer.invoke(channels.setTheme, mode),
   readIndex: () => ipcRenderer.invoke(channels.readIndex),
   readPage: id => ipcRenderer.invoke(channels.readPage, id),
+  peekPage: id => ipcRenderer.invoke(channels.peekPage, id),
   commit: (changes, options) => ipcRenderer.invoke(channels.commit, { changes, options }),
   async saveImageAsset(input) {
     validateImageInput(input)
     return ipcRenderer.invoke(channels.saveImageAsset, input)
   },
   readImageAssets: ids => ipcRenderer.invoke(channels.readImageAssets, ids),
+  pruneOrphanAssets: (graceMs, protectedIds) => ipcRenderer.invoke(channels.pruneOrphanAssets, { graceMs, protectedIds }),
   openMarkdownFile: () => ipcRenderer.invoke(channels.openMarkdownFile),
   saveFile: options => ipcRenderer.invoke(channels.saveFile, options),
   onMenuCommand(listener) {

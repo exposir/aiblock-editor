@@ -1,7 +1,7 @@
 import { getDesktopBridge } from '../desktop/bridge'
 import { imageAssetMetadata, imageAssetUrlPrefix, isAssetId, isImageAssetMetadata, maxImageBytes, validateImageInput } from './asset-format'
 import type { ImageAssetInput, ImageAssetMetadata } from './asset-format'
-import { idbCommit, idbResult, openWorkspaceDatabase } from './workspace-storage'
+import { idbCommit, idbResult, listIndexedAssetMetadata, openWorkspaceDatabase } from './workspace-storage'
 
 type BlobImageInput = Omit<ImageAssetInput, 'bytes'> & { readonly blob: Blob }
 
@@ -16,6 +16,11 @@ export interface AssetStore {
   acquireAssetUrl(id: string): AssetUrlLease
   resolveAssetUrl(id: string): Promise<string | null>
   releaseAssetUrl(id: string): void
+}
+
+interface BrowserAssetStore extends AssetStore {
+  listMetadata(): Promise<ImageAssetMetadata[]>
+  remove(ids: readonly string[]): Promise<void>
 }
 
 interface StoredImage { readonly metadata: ImageAssetMetadata; readonly blob: Blob }
@@ -39,7 +44,11 @@ async function imageBytes(input: ImageAssetInput | BlobImageInput): Promise<Imag
   return { ...metadata, bytes: new Uint8Array(await blob.arrayBuffer()) }
 }
 
-export function createBrowserAssetStore(factory: IDBFactory | undefined = globalThis.indexedDB): AssetStore {
+export function activeBrowserAssetIds(factory = globalThis.indexedDB): string[] {
+  return factory ? [...leasesByDatabase.get(factory)?.keys() ?? []] : []
+}
+
+export function createBrowserAssetStore(factory: IDBFactory | undefined = globalThis.indexedDB): BrowserAssetStore {
   let opened: Promise<IDBDatabase> | undefined
   const leases = (factory ? leasesByDatabase.get(factory) : undefined) ?? new Map<string, BlobLease>()
   if (factory) leasesByDatabase.set(factory, leases)
@@ -106,14 +115,15 @@ export function createBrowserAssetStore(factory: IDBFactory | undefined = global
       const subtle = globalThis.crypto?.subtle
       if (!subtle) throw new Error('Image storage requires Web Crypto in a secure context')
       const hash = await subtle.digest('SHA-256', bytes)
-      const metadata = imageAssetMetadata({ ...image, bytes },
-        Array.from(new Uint8Array(hash), byte => byte.toString(16).padStart(2, '0')).join(''))
+      const id = Array.from(new Uint8Array(hash), byte => byte.toString(16).padStart(2, '0')).join('')
+      const metadata = { ...imageAssetMetadata({ ...image, bytes }, id), createdAt: Date.now() }
       const transaction = (await database()).transaction('assets', 'readwrite')
       const finished = idbCommit(transaction)
       const store = transaction.objectStore('assets')
       const request = store.get(metadata.id)
       request.onsuccess = () => {
         if (request.result === undefined) store.add({ metadata, blob: new Blob([bytes], { type: metadata.mime }) }, metadata.id)
+        else store.put({ ...request.result, lastSavedAt: metadata.createdAt }, metadata.id)
       }
       await finished
       return (request.result as StoredImage | undefined)?.metadata ?? metadata
@@ -121,6 +131,11 @@ export function createBrowserAssetStore(factory: IDBFactory | undefined = global
     async readImageAssets(ids) {
       return (await loadImages(assetIds(ids))).map(image => image?.metadata ?? null)
     },
+    async listMetadata() {
+      const db = await database()
+      return listIndexedAssetMetadata(db.transaction('assets').objectStore('assets'))
+    },
+    remove: ids => removeBrowserImageAssets(ids, factory),
     acquireAssetUrl,
     resolveAssetUrl(id) {
       const lease = acquireAssetUrl(id)

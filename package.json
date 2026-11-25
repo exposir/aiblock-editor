@@ -1,6 +1,13 @@
 {
   "name": "aiblock-editor",
   "version": "0.1.0",
+  "description": "A local-first block document editor with an AI-friendly CLI and desktop app.",
+  "author": "AIBlock Editor contributors",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/exposir/aiblock-editor.git"
+  },
+  "homepage": "https://github.com/exposir/aiblock-editor",
   "private": true,
   "license": "MIT",
   "type": "module",
@@ -16,6 +23,7 @@
     "electron:build": "node scripts/build-electron.mjs && vite build",
     "electron:dev": "node scripts/dev-electron.mjs",
     "electron:pack": "pnpm electron:build && electron-builder --dir",
+    "electron:dist": "pnpm electron:build && electron-builder --mac dmg --arm64",
     "cli:build": "node scripts/build-cli.mjs",
     "cli": "node scripts/run-cli.mjs",
     "docs:dev": "vitepress dev docs",
@@ -90,6 +98,8 @@
     "npmRebuild": false,
     "mac": {
       "icon": "build/icon.icns",
+      "entitlements": "build/entitlements.mac.plist",
+      "entitlementsInherit": "build/entitlements.mac.plist",
       "target": [
         "dir",
         "dmg"

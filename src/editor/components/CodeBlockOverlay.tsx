@@ -7,11 +7,12 @@ import { createPortal } from 'react-dom'
 import { saveDocumentFile, suggestedFileName } from '../../desktop/bridge'
 import { CODE_LANGUAGES, codeLanguage, isPreviewLanguage, viewModeFor } from '../extensions/code-languages'
 import type { CodeLanguage, CodeViewMode } from '../extensions/code-languages'
-import { createNodeIndex } from '../extensions/document-changes'
+import { changedNodes, createNodeIndex } from '../extensions/document-changes'
 import { downloadBlob } from '../markdown/markdown-files'
 import { isDark } from '../preview/code-preview'
 import { diagramTemplates, renderMermaid } from '../preview/mermaid'
 import { positionOfBlockId } from './block-geometry'
+import { codeBlockAnchor } from './code-block-anchors'
 import { useEditorSelector, useOverlayRect } from './editor-ui'
 import type { OverlayRect } from './overlay-geometry'
 import { nearbyOverlayRect } from './overlay-layout'
@@ -173,20 +174,67 @@ function CodeControls({ editor, host, node, pos, anchor, onFocus, initial }: {
 const codeNodes = createNodeIndex(node => node.type.name === 'codeBlock')
 type Control = { node: ProseMirrorNode; pos: number; anchor: HTMLElement | null }
 
-function createCodeControlsSelector() {
+export function createCodeControlsSelector() {
   let previousDoc: ProseMirrorNode | undefined
   let controls: Control[] = []
+  const byNode = new Map<ProseMirrorNode, Control>()
+
+  function remove(node: ProseMirrorNode) {
+    const control = byNode.get(node)
+    if (!control) return false
+    byNode.delete(node)
+    const index = controls.indexOf(control)
+    if (index >= 0) controls.splice(index, 1)
+    return true
+  }
+
   return (editor: Editor | null) => {
     if (!editor) return []
-    const doc = editor.state.doc
-    if (previousDoc !== doc) {
-      previousDoc = doc
+    const activeEditor = editor
+    const doc = activeEditor.state.doc
+    if (previousDoc === doc) return controls
+    const previous = previousDoc
+    previousDoc = doc
+
+    if (!previous) {
       controls = codeNodes(doc).map(({ node, pos }) => {
-        const element = editor.view.nodeDOM(pos)
-        return { node, pos, anchor: element instanceof HTMLElement ? element : null }
+        const rendered = activeEditor.view.nodeDOM(pos)
+        const element = codeBlockAnchor(activeEditor.view, node) ?? (rendered instanceof HTMLElement ? rendered : null)
+        const control = { node, pos, anchor: element }
+        byNode.set(node, control)
+        return control
       })
+      return controls
     }
-    return controls
+
+    const previousControls = controls
+    controls = [...controls]
+    let changed = false
+    function add(node: ProseMirrorNode, pos: number) {
+      const existing = byNode.get(node)
+      if (existing) {
+        if (existing.pos !== pos) {
+          existing.pos = pos
+          changed = true
+        }
+        return
+      }
+      const registered = codeBlockAnchor(activeEditor.view, node)
+      const rendered = registered || typeof node.attrs.blockId === 'string' ? null : activeEditor.view.nodeDOM(pos)
+      const element = registered ?? (rendered instanceof HTMLElement ? rendered : null)
+      const control = { node, pos, anchor: element }
+      let index = controls.findIndex(item => item.pos > pos)
+      if (index < 0) index = controls.length
+      controls.splice(index, 0, control)
+      byNode.set(node, control)
+      changed = true
+    }
+
+    changedNodes(previous, doc,
+      (node, pos) => { if (node.type.name === 'codeBlock') add(node, pos) },
+      node => { if (node.type.name === 'codeBlock' && remove(node)) changed = true })
+    if (!changed) controls = previousControls
+    return changed ? [...controls] : controls
   }
 }
 
@@ -208,9 +256,11 @@ export function CodeBlockOverlay({ editor, host }: { editor: Editor; host: HTMLE
     const { selection } = current.state
     const { $head } = selection
     for (let depth = $head.depth; depth > 0; depth--) {
-      if ($head.node(depth).type.name === 'codeBlock') return current.view.nodeDOM($head.before(depth))
+      const node = $head.node(depth)
+      if (node.type.name === 'codeBlock') return codeBlockAnchor(current.view, node)
     }
-    return selection.$from.nodeAfter?.type.name === 'codeBlock' ? current.view.nodeDOM(selection.from) : null
+    const node = selection.$from.nodeAfter
+    return node?.type.name === 'codeBlock' ? codeBlockAnchor(current.view, node) : null
   })
 
   useLayoutEffect(() => {

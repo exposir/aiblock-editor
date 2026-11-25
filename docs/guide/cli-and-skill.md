@@ -1,6 +1,6 @@
 # CLI 与 Agent Skill
 
-`aiblock-doc` 用于从终端读取本地桌面文档和写入 Markdown。配套 Skill 说明如何定位页面、使用正确的版本标签以及处理冲突。CLI 可以在桌面应用关闭时运行。桌面端打开同一工作区时，会感知外部写入。
+`aiblock-doc` 用于从终端搜索和读取本地桌面文档，写入或整页替换 Markdown，导入图片并清理未引用资产。配套 Skill 说明如何定位页面、使用正确的版本标签以及处理冲突。CLI 可以在桌面应用关闭时运行。桌面端打开同一工作区时，会感知外部写入。
 
 ## 安装 CLI
 
@@ -22,7 +22,13 @@ aiblock-doc --help
 
 ## 从读取到写入
 
-先通过 `list` 获取页面 UUID 并确认标题和父页。再用 `get` 读取正文与标签。输出是一行 JSON，下例使用 `jq` 只读取标准输出中的字段。
+不知道页面 UUID 时先用 `search` 按标题和正文查找。标题命中排在前面，正文命中带上下文片段；回收站页面不参与搜索。
+
+```sh
+aiblock-doc search '发布计划' --limit 5
+```
+
+再用 `list` 确认页面树，用 `get` 读取正文与标签。输出是一行 JSON，下例使用 `jq` 只读取标准输出中的字段。
 
 ```sh
 aiblock-doc list
@@ -32,9 +38,25 @@ printf '## 决议\n\n上线前完成回归。\n' |
   aiblock-doc append "$page_id" --if-match "$etag" --markdown -
 ```
 
-`create --title <title> --markdown -` 从 stdin 新建页，可用 `--parent` 归入某个父页，或用 `--activate` 设为活动页。新增、追加、改名和删除都支持 `--dry-run`。删除会带走所有后代，先检查预演的 `removedPageIds`。
+`append` 只把 Markdown 加到页尾。需要整体重写时用 `update`，它同样使用页面 `etag`，并保留标题、图标、父页、同级顺序和创建时间：
 
-正文追加使用 `get` 返回的页面 `etag`。改名和删除使用 `list` 或 `get` 返回的 `indexEtag`。返回退出码 4 时，根据操作重读正文或页面树，对照当前数据再决定是否重试。完整参数、输出和退出码见 [CLI 参考](../reference/cli-api)。
+```sh
+aiblock-doc update "$page_id" --if-match "$etag" --markdown rewritten.md
+```
+
+`create --title <title> --markdown -` 从 stdin 新建页，可用 `--parent` 归入某个父页，或用 `--activate` 设为活动页。新增、追加、替换、改名、删除、图片导入和资产回收都支持 `--dry-run`。删除会带走所有后代，先检查预演的 `removedPageIds`。
+
+图片先导入，再把返回的 `markdown` 交给 `create`、`update` 或 `append`。支持 PNG、JPEG、GIF 和 WebP，单张上限 32 MiB，按 SHA-256 去重。
+
+```sh
+aiblock-doc add-image screenshot.png
+# data.markdown 形如 ![](asset:<id>)
+aiblock-doc gc --dry-run
+```
+
+`asset:` 引用只在同一工作区有效。未引用的图片可以用 `gc` 回收：默认保留 5 分钟内新写入的资产，`--grace-ms 0` 立即回收。`gc` 在锁内读取活页和回收站，任何分片缺失或损坏都会中止，且不删除资产。
+
+正文追加和替换使用 `get` 返回的页面 `etag`。改名和删除使用 `list` 或 `get` 返回的 `indexEtag`。返回退出码 4 时，根据操作重读正文或页面树，对照当前数据再决定是否重试。完整参数、输出和退出码见 [CLI 参考](../reference/cli-api)。
 
 ## 安装 Skill
 

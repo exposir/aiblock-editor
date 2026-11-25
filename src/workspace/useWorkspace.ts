@@ -1,12 +1,13 @@
-import { hasUnsavedImages, recordImageReferences, resetImageUploads, waitForImageUploads } from '../editor/extensions/image-assets'
+import { hasUnsavedImages, imageUploadFailures, recordImageReferences, resetImageUploads, waitForImageUploads } from '../editor/extensions/image-assets'
 import { withDeadline } from './deadline'
-import { finishImageTransfers } from '../editor/extensions/image-block'
+import { finishImageTransfers, hasPendingImageTransfers } from '../editor/extensions/image-block'
 import type { JSONContent } from '@tiptap/core'
 import type { Schema } from '@tiptap/pm/model'
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { browserWorkspaceStorage } from './workspace-storage'
+import { activeBrowserAssetIds } from './asset-store'
 import { DEMO_HANDBOOK_ID, createDemoWorkspace, upgradeDemoWorkspace } from './demo-workspace'
-import { activatePage, checkedPageContent, findPage, formatPageHash, parseLegacyBlockHash, parsePageHash, updatePage } from './page-store'
+import { activatePage, checkedPageContent, emptyTrash, findPage, formatPageHash, parseLegacyBlockHash, parsePageHash, purgeTrashedPage, updatePage } from './page-store'
 import type { PageIdentity, PageRecord, WorkspacePage, WorkspaceState } from './page-store'
 import { isPageId, pageMetadata } from './workspace-format'
 import type {
@@ -100,6 +101,9 @@ export function useWorkspace(schema: Schema, persistence?: WorkspacePersistence)
   const reads = useRef(new Map<string, Promise<PageShard | null>>())
   const forceWrite = useRef(false)
   const reloading = useRef(false)
+  const purgeRequested = useRef(new Set<string>())
+  const pruneRequested = useRef(false)
+  const editorAssets = useRef<{ id: string; assets: ReadonlySet<string> } | null>(null)
 
   const remember = useCallback((id: string, content: JSONContent) => {
     const entries = cache.current
@@ -111,21 +115,24 @@ export function useWorkspace(schema: Schema, persistence?: WorkspacePersistence)
   const track = useCallback((before: Pages | null, after: Pages) => {
     if (before === after) return
     const previous = new Map(before?.pages.map(page => [page.id, page]))
+    const removed = new Set([...previous.keys(), ...before?.trash?.map(page => page.id) ?? []])
     for (const page of after.pages) {
       const oldPage = previous.get(page.id)
       if (page.content && page.content !== oldPage?.content) {
         dirty.current.set(page.id, { id: page.id, content: page.content, updatedAt: page.updatedAt })
         remember(page.id, page.content)
       }
-      previous.delete(page.id)
+      removed.delete(page.id)
     }
-    for (const id of previous.keys()) {
+    for (const page of after.trash ?? []) removed.delete(page.id)
+    for (const id of removed) {
       dirty.current.set(id, null)
       cache.current.delete(id)
       reads.current.delete(id)
     }
     dirtyIndex.current = {
       version: 2, activePageId: after.activePageId, pages: after.pages.map(pageMetadata),
+      ...(after.trash === undefined ? {} : { trash: after.trash }),
       ...(after.demoVersion === undefined ? {} : { demoVersion: after.demoVersion }),
     }
   }, [remember])
@@ -188,7 +195,10 @@ export function useWorkspace(schema: Schema, persistence?: WorkspacePersistence)
           continue
         }
         if (dirtyIndex.current === pendingIndex) dirtyIndex.current = null
-        for (const [id, page] of pendingPages) if (dirty.current.get(id) === page) dirty.current.delete(id)
+        for (const [id, page] of pendingPages) {
+          if (dirty.current.get(id) === page) dirty.current.delete(id)
+          if (page === null && purgeRequested.current.delete(id)) pruneRequested.current = true
+        }
         if (mounted.current) {
           setSaveFailed(false)
           setExternalConflict(null)
@@ -198,8 +208,17 @@ export function useWorkspace(schema: Schema, persistence?: WorkspacePersistence)
     }
     const writing = drain().finally(() => { inFlight.current = null })
     inFlight.current = writing
+    void writing.then(async saved => {
+      if (!saved || !pruneRequested.current || !storage.pruneOrphanAssets || inFlight.current || reloading.current ||
+          draft.current || dirty.current.size || dirtyIndex.current || hasPendingImageTransfers() ||
+          imageUploadFailures() || hasUnsavedImages()) return
+      pruneRequested.current = false
+      const protectedIds = new Set(editorAssets.current?.assets)
+      if (!persistence) for (const id of activeBrowserAssetIds()) protectedIds.add(id)
+      await storage.pruneOrphanAssets(undefined, [...protectedIds])
+    }).catch(error => console.warn('Unable to prune unused images', error))
     return writing
-  }, [collect, publish, storage])
+  }, [collect, persistence, publish, storage])
 
   const cachedContent = useCallback((id: string) => {
     const pending = dirty.current.get(id)
@@ -268,6 +287,7 @@ export function useWorkspace(schema: Schema, persistence?: WorkspacePersistence)
       const index = await storage.readIndex()
       const before: Pages | null = index && {
         activePageId: index.activePageId, pages: index.pages,
+        ...(index.trash === undefined ? {} : { trash: index.trash }),
         ...(index.demoVersion === undefined ? {} : { demoVersion: index.demoVersion }),
       }
       const restored = before ? upgradeDemoWorkspace(schema, before) : createDemoWorkspace(schema)
@@ -338,11 +358,14 @@ export function useWorkspace(schema: Schema, persistence?: WorkspacePersistence)
       const workspace: Pages = {
         activePageId: index.activePageId,
         pages: index.pages,
+        ...(index.trash === undefined ? {} : { trash: index.trash }),
         ...(index.demoVersion === undefined ? {} : { demoVersion: index.demoVersion }),
       }
       draft.current = null
       dirty.current.clear()
       dirtyIndex.current = null
+      purgeRequested.current.clear()
+      pruneRequested.current = false
       reads.current = new Map()
       cache.current.clear()
       for (const [id, content] of contents) cache.current.set(id, content)
@@ -462,12 +485,37 @@ export function useWorkspace(schema: Schema, persistence?: WorkspacePersistence)
     return { ...page, content: (editing?.id === id ? editing.read() : cachedContent(id)) ?? content }
   }
 
+  const searchContent = useCallback(async (id: string): Promise<JSONContent | null> => {
+    if (!current.current || !findPage(current.current.workspace, id)) return null
+    if (draft.current?.id === id) return draft.current.read()
+    const cached = cachedContent(id)
+    if (cached) return cached
+    const shard = storage.peekPage ? await storage.peekPage(id) : await storage.readPage(id)
+    if (!shard || !current.current || !findPage(current.current.workspace, id)) return null
+    return checkedPageContent(schema, shard, id).content
+  }, [cachedContent, schema, storage])
+
+  const holdEditorAssets = useCallback((id: string, assets: ReadonlySet<string> | null) => {
+    if (assets) editorAssets.current = { id, assets }
+    else if (editorAssets.current?.id === id) editorAssets.current = null
+  }, [])
+
+  function purgeTrash(id?: string) {
+    change(workspace => {
+      const result = id === undefined ? emptyTrash(workspace) : purgeTrashedPage(workspace, id)
+      for (const removed of result.removedPageIds) purgeRequested.current.add(removed)
+      return result.workspace
+    })
+  }
+
   function reset() {
     const previous = current.current
     if (!previous) return
     const workspace = createDemoWorkspace(schema)
     draft.current = null
     forceWrite.current = false
+    purgeRequested.current.clear()
+    pruneRequested.current = false
     setExternalConflict(null)
     resetImageUploads()
     cache.current.clear()
@@ -490,6 +538,6 @@ export function useWorkspace(schema: Schema, persistence?: WorkspacePersistence)
   return {
     workspace: snapshot?.workspace ?? null, anchor: snapshot?.anchor ?? null, revision: revision ?? 0,
     saveFailed, loadFailed, retry, change, reset, stageContent, loadPage, deferTitle,
-    externalConflict, keepLocal, reloadExternal,
+    externalConflict, keepLocal, reloadExternal, searchContent, purgeTrash, holdEditorAssets,
   }
 }

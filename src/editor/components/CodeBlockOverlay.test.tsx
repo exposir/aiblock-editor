@@ -2,7 +2,7 @@ import { Editor } from '@tiptap/core'
 import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { createEditorExtensions } from '../extensions'
-import { CodeBlockOverlay } from './CodeBlockOverlay'
+import { CodeBlockOverlay, createCodeControlsSelector } from './CodeBlockOverlay'
 
 const diagram = vi.hoisted(() => ({ initialize: vi.fn(), render: vi.fn() }))
 const fixtureSvg = '<svg viewBox="0 0 420 80" xmlns="http://www.w3.org/2000/svg"><text>Diagram</text></svg>'
@@ -77,6 +77,26 @@ describe('CodeBlockOverlay', () => {
     expect(host.querySelector('button[aria-label="自动换行"]')).not.toBeNull()
     expect(host.querySelector('button[aria-label="复制代码"]')).not.toBeNull()
     expect(editor.view.dom.querySelectorAll('button, input, select, textarea')).toHaveLength(0)
+  })
+
+  it('selector: updates only the changed code node and reuses DOM anchors', () => {
+    const { editor } = mountEditor()
+    const select = createCodeControlsSelector()
+    const first = select(editor)
+    const anchor = first[0]?.anchor
+    editor.commands.updateCodeBlock(0, { language: 'python' })
+    const second = select(editor)
+    expect(second).not.toBe(first)
+    expect(second[0]?.node.attrs.language).toBe('python')
+    expect(second[0]?.anchor).toBe(anchor)
+  })
+
+  it('selector: text edits do not ask ProseMirror to resolve the block DOM again', () => {
+    const { editor } = mountEditor()
+    const nodeDOM = vi.spyOn(editor.view, 'nodeDOM')
+    editor.commands.insertContentAt(1, '!')
+    expect(editor.state.doc.firstChild?.textContent).toBe('!const x = 1')
+    expect(nodeDOM).not.toHaveBeenCalled()
   })
 
   it('language: 切换语言更新节点属性并把焦点归还编辑器代码块', async () => {

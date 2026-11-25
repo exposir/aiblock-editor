@@ -32,3 +32,20 @@ export function decideNavigation(target: string, appUrl: string): NavigationDeci
   const url = externalUrl(target)
   return url ? { kind: 'external', url } : { kind: 'deny' }
 }
+
+export function contentSecurityPolicy(isDev: boolean): string {
+  const devHttp = isDev ? ' http://127.0.0.1:*' : ''
+  const devSocket = isDev ? ' ws://127.0.0.1:*' : ''
+  return [
+    "default-src 'self'",
+    `script-src 'self'${devHttp}`,
+    "worker-src 'self' blob:",
+    "style-src 'self' 'unsafe-inline'",
+    "img-src 'self' aiblock-asset: blob: data: https: http:",
+    "font-src 'self' data:",
+    `connect-src 'self' aiblock-asset: blob:${devHttp}${devSocket}`,
+    "object-src 'none'",
+    "base-uri 'self'",
+    "frame-ancestors 'none'",
+  ].join('; ')
+}

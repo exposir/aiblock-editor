@@ -91,6 +91,15 @@ describe('workspace file concurrency primitives', () => {
     expect((await files.readPage(idA))?.content).toMatchObject({ content: [{ content: [{ text: '恢复写入' }] }] })
   })
 
+  it('does not steal an aged lock held by a live process during a long scan', async () => {
+    const { directory } = await workspace()
+    const path = join(directory, '.lock')
+    const owner = JSON.stringify({ token: 'scanning', createdAt: 0, pid: process.pid })
+    await writeFile(path, owner)
+    await expect(withWorkspaceLock(directory, async () => {}, { timeoutMs: 0 })).rejects.toBeInstanceOf(WorkspaceLockedError)
+    expect(await readFile(path, 'utf8')).toBe(owner)
+  })
+
   it('recovers an old lock and refuses a live lock with a semantic error', async () => {
     const { directory, files } = await workspace()
     await files.commit({ index: index(), pages: [shard(idA, '初稿')], removedPageIds: [] })

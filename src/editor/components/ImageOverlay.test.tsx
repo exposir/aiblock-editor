@@ -55,6 +55,7 @@ describe('the single image toolbar', () => {
   it('keeps the focused input and its typed value offscreen, then unmounts on blur', async () => {
     const viewport = mockViewport()
     const { editor, second, outside } = mountImages()
+    await viewport.flush()
     act(() => viewport.show(second, true, 300))
     const tools = await screen.findByRole('group', { name: '图片工具' })
     expect(tools).toHaveStyle({ left: '34px', top: '246px' })

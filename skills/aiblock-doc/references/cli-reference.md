@@ -1,6 +1,6 @@
 # aiblock-doc CLI 参考
 
-CLI 操作本地 Electron v2 工作区。运行 `aiblock-doc --help` 查看当前二进制的用法。以下 JSON 来自同一个隔离工作区的一次实际运行，示例中的 UUID、时间和标签只能用于理解输出。实际调用总是读取当前工作区的值。
+CLI 操作本地 Electron v2 工作区。运行 `aiblock-doc --help` 查看当前二进制的用法。以下 JSON 是响应结构示例，UUID、时间、标签和资产哈希随工作区变化，只能用于理解输出。实际调用总是读取当前工作区的值。
 
 <!-- #region command-contract -->
 
@@ -10,18 +10,24 @@ CLI 操作本地 Electron v2 工作区。运行 `aiblock-doc --help` 查看当�
 | --- | --- | --- |
 | `list` | 无位置参数。读取索引，返回存储顺序的平面列表，可用 `parentId` 和同级 `order` 组树。 | `activePageId`、`pages`、`indexEtag` |
 | `get <id>` | UUID。可选 `--format markdown\|json`，默认 `markdown`。 | `page`、`etag`、`indexEtag`、`format`、`content` |
+| `search <query>` | 关键词必填。`--limit <n>` 为正整数，默认 20。检索全部活页，标题命中优先，正文命中带片段。 | `query`、`matches`（`page`、`titleMatch`、`snippets`） |
 | `create --title <title>` | `--parent <id>` 默认根页，`--icon <emoji>` 默认 `📄`，`--markdown -\|<file>` 默认空页。`--activate` 默认关闭。 | `page`、`etag`、`indexEtag` |
 | `append <id> --if-match <etag>` | 使用页面 `etag` 追加非空 Markdown。`--markdown -\|<file>` 省略时读 stdin。 | `pageId`、`etag`、`indexEtag` |
+| `update <id> --if-match <etag>` | 使用页面 `etag` 整页替换正文，保留标题、图标、父页、同级顺序和创建时间。输入方式与 `append` 相同。 | `pageId`、`etag`、`indexEtag` |
 | `rename <id> --title <title> --if-match <indexEtag>` | 使用索引 `indexEtag` 更新标题，正文分片保持原样。 | `pageId`、`title`、`indexEtag` |
 | `delete <id> --if-match <indexEtag>` | 使用索引 `indexEtag` 删除整棵子树。删光时补一个空白根页。 | `removedPageIds`、`activePageId`、`indexEtag` |
+| `add-image <file>` | 导入 PNG、JPEG、GIF 或 WebP，单文件上限 32 MiB。按 SHA-256 去重写入工作区 `assets/`。 | `asset`、`markdown`、`created` |
+| `gc [--grace-ms <n>]` | 扫描活页和回收站分片的图片引用。默认宽限 300000 ms；`--grace-ms 0` 立即回收。 | `scannedPages`、`referencedCount`、`orphanIds`、`removedCount`、`reclaimedBytes` |
 
 `page` 和 `pages[]` 的元数据包含 `id`、`parentId`、`title`、`icon`、`order`、`updatedAt`。时间戳单位为 Unix 毫秒，根页的 `parentId` 为 `null`。标题去除首尾空白，空标题报错。图标为空白时回退到 `📄`。
 
+`search` 返回的 `page` 与 `list` 相同。关键词去除首尾空白；空白关键词、非正整数的 `--limit` 或小于 0 的 `--grace-ms` 返回参数错误。`titleMatch` 为 `true` 时 `snippets` 为空；正文命中时 `snippets` 含一段上下文。回收站页面不参与检索，但其中的图片引用仍会被 `gc` 视为存活引用。
+
 `--workspace <dir>` 优先于 `$AIBLOCK_WORKSPACE`，两者缺省时自动使用系统默认的桌面工作区。macOS 的默认路径是 `~/Library/Application Support/aiblock-editor/workspace`。Windows 使用 `%APPDATA%\aiblock-editor\workspace`，缺少 `APPDATA` 时使用用户目录下的 `AppData\Roaming`。Linux 使用 `$XDG_CONFIG_HOME/aiblock-editor/workspace`，缺少变量时使用 `~/.config`。相对路径以命令的执行目录为准。给已有旧桌面工作区写入前，先用 `list` 打开它。读取索引时会尝试把有效的旧 `workspace.json` 迁移为 v2。
 
-`--markdown -` 显式走 stdin，文件输入按 UTF-8 读取，路径相对于执行目录。`append` 在交互终端且无输入时返回参数错误。创建已有工作区的页面时，只有 `--activate` 会切换活动页，首次创建自动激活。若删除当前活动页，CLI 优先选择目标节点的后一个同级页，其次是前一个同级页、父页或首个剩余页。
+`--markdown -` 显式走 stdin，文件输入按严格 UTF-8 读取，路径相对于执行目录。`append` 与 `update` 在交互终端且无输入时返回参数错误。`update` 还拒绝空白 Markdown、非 UTF-8 文件和渲染后没有任何可见块的内容。创建已有工作区的页面时，只有 `--activate` 会切换活动页，首次创建自动激活。若删除当前活动页，CLI 优先选择目标节点的后一个同级页，其次是前一个同级页、父页或首个剩余页。
 
-`--dry-run` 校验写命令并预演结果，正文和索引保持原样。它会短暂持有文件锁，工作区目录尚不存在时可能被创建。`create` 预演返回 `dryRun: true` 和临时 `page`，两个标签为 `null`。其他预演增加 `dryRun: true` 并返回当前标签。预演删除末页时生成的替补 ID 仅供查看。`list` 和 `get` 接受该选项但执行正常读取。
+`--dry-run` 校验写命令并预演结果，正文和索引保持原样。工作区写命令的预演会短暂持有文件锁，目录尚不存在时可能被创建。`create` 预演返回 `dryRun: true` 和临时 `page`，两个标签为 `null`。`append`、`update`、`rename` 和 `delete` 预演增加 `dryRun: true` 并返回当前标签。`add-image` 预演只校验文件并计算确定性资产元数据，不创建 `assets/`。`gc` 预演只报告候选，不删除文件。`list`、`get` 和 `search` 接受该选项但执行正常读取。
 
 ## JSON 信封与退出码
 
@@ -33,9 +39,9 @@ CLI 操作本地 Electron v2 工作区。运行 `aiblock-doc --help` 查看当�
 | 1 | `io_error` | 读取、写入或其他运行错误。核对路径和权限。 |
 | 1 | `workspace_error` | 错误类型已预留。当前命令通常以 `io_error` 报告 I/O 问题。 |
 | 2 | `usage` | 未知命令、缺少参数、非法 UUID 或非法格式选项。用 `--help` 核对。 |
-| 3 | `not_found` | 缺少工作区、页面或父页。重新列出页面。 |
+| 3 | `not_found` | 缺少工作区、页面、父页或图片文件。重新列出页面或检查文件路径。 |
 | 4 | `conflict` | 页面或索引标签过期、磁盘变化或锁竞争。重读对应数据后确认再试。 |
-| 5 | `invalid_content` | 空标题、空追加、无效文档或损坏的存储格式。修正内容，保留损坏文件供恢复。 |
+| 5 | `invalid_content` | 空标题、空追加或替换、无可见内容、无效图片或损坏的存储格式。`gc` 发现任何分片缺失或损坏时中止，不删除资产。修正内容，保留损坏文件供恢复。 |
 
 <!-- #endregion command-contract -->
 
@@ -152,7 +158,69 @@ CLI 操作本地 Electron v2 工作区。运行 `aiblock-doc --help` 查看当�
 }
 ```
 
-未初始化的工作区可执行 `list`，返回 `{"ok":true,"data":{"activePageId":null,"pages":[],"indexEtag":null}}`。创建预演的 `page` 仍包含上述元数据，两个标签均为 `null`。
+### `search`
+
+```json
+{
+  "ok": true,
+  "data": {
+    "query": "发布",
+    "matches": [
+      {"page": {"id": "ee1d824e-1ee6-4ca3-9df3-cd79a9798d82", "parentId": null, "title": "发布记录", "icon": "📝", "order": 0, "updatedAt": 1795592789650}, "titleMatch": true, "snippets": []},
+      {"page": {"id": "bec6266d-9ff3-43b2-b418-7b21466e8e6c", "parentId": null, "title": "备忘", "icon": "📄", "order": 1, "updatedAt": 1795592789650}, "titleMatch": false, "snippets": ["上线前完成发布清单。"]}
+    ]
+  }
+}
+```
+
+### `update`
+
+```json
+{
+  "ok": true,
+  "data": {
+    "pageId": "ee1d824e-1ee6-4ca3-9df3-cd79a9798d82",
+    "etag": "26855490a609943367a4c6e2dce37862c46c883873bf268da51a9e6bfeba0ad0",
+    "indexEtag": "18316393bc3cdefd8d7dc3bd447750020cec1e406af6799d94115e48f531dd67"
+  }
+}
+```
+
+`update --dry-run` 返回 `dryRun: true`，并带上替换前的 `etag` 和 `indexEtag`。
+
+### `add-image`
+
+```json
+{
+  "ok": true,
+  "data": {
+    "asset": {"id": "9f2c4d1e7a8b3c5d6e0f1a2b3c4d5e6f708192a3b4c5d6e7f8091a2b3c4d5e6f.png", "mime": "image/png", "width": 1280, "height": 720, "byteLength": 48213, "name": "screenshot.png", "createdAt": 1795592789650},
+    "markdown": "![](asset:9f2c4d1e7a8b3c5d6e0f1a2b3c4d5e6f708192a3b4c5d6e7f8091a2b3c4d5e6f.png)",
+    "created": true
+  }
+}
+```
+
+再次导入相同字节时 `created` 为 `false`。`--dry-run` 额外返回 `dryRun: true`，`asset` 不含 `createdAt`，且不写入 `assets/`。
+
+### `gc`
+
+```json
+{
+  "ok": true,
+  "data": {
+    "scannedPages": 3,
+    "referencedCount": 2,
+    "orphanIds": ["9f2c4d1e7a8b3c5d6e0f1a2b3c4d5e6f708192a3b4c5d6e7f8091a2b3c4d5e6f.png"],
+    "removedCount": 1,
+    "reclaimedBytes": 48213
+  }
+}
+```
+
+`gc --dry-run` 仍列出 `orphanIds`，但 `removedCount` 和 `reclaimedBytes` 为 0。`scannedPages` 包含活页和回收站页面，`referencedCount` 是这些页面正文里实际引用的资产数。
+
+未初始化的工作区可执行 `list`，返回 `{"ok":true,"data":{"activePageId":null,"pages":[],"indexEtag":null}}`。创建预演的 `page` 仍包含上述元数据，两个标签均为 `null`。未初始化的工作区执行 `search` 返回 `{"ok":true,"data":{"query":"…","matches":[]}}`。
 
 页面标签过期时，stderr 的一行示例为
 
@@ -218,14 +286,24 @@ $$
 
 块公式也接受 `math` 围栏。CLI 读写源码，预览与语法错误提示由编辑器提供。
 
-### 图片
+### 图片与本地资产
 
 ```markdown
 ![发布流程](https://example.com/release.png)
 ![本地截图](asset:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef.png)
 ```
 
-本地资产 ID 必须已存在于同一个工作区。Markdown 引用只存地址。CLI 当前没有上传图片命令。编辑器支持用 `<img>` 保留宽高、展示宽度和对齐。纯 Node CLI 的 Markdown 导入缺少 DOM，该 HTML 图片分支会跳过图片。CLI 输入用 `![…](…)`，检查原生图像布局用 `get --format json`。
+用 `aiblock-doc add-image <file>` 导入本地图片。支持 PNG、JPEG、GIF 和 WebP，按文件头识别格式与尺寸，单文件上限 32 MiB。文件按字节的 SHA-256 去重，写入 `<workspace>/assets/<sha256>.<ext>`，元数据写入同名 `.json`。返回的 `markdown` 可以直接交给 `create`、`update` 或 `append`：
+
+```sh
+aiblock-doc add-image screenshot.png
+printf '## 截图\n\n%s\n' '![](asset:<id>)' |
+  aiblock-doc append "$page_id" --if-match "$etag" --markdown -
+```
+
+`add-image --dry-run` 只校验文件并计算确定性元数据，不创建 `assets/`。图片文件不存在退出 3；格式、尺寸或大小不合法退出 5。`asset:` 引用只在同一工作区有效，把 Markdown 交给另一个工作区时需要一并复制 `assets/`。本地资产 ID 必须已存在。Markdown 引用只存地址。编辑器支持用 `<img>` 保留宽高、展示宽度和对齐。纯 Node CLI 的 Markdown 导入缺少 DOM，该 HTML 图片分支会跳过图片。CLI 输入用 `![…](…)`，检查原生图像布局用 `get --format json`。
+
+`gc` 在锁内读取活页和回收站的全部分片，任何分片缺失、JSON 损坏或文档不符合 schema 都会中止，且不删除资产。默认保留 5 分钟内新写入的未引用资产，避免与正在进行的保存竞争。
 
 Markdown 保留这里列出的块和文本标记。评论、块 ID 等内部字段在 Markdown 中省略，导出也可能规范化语法。`get --format json` 的 `content` 是正文对象，评论线程仍在工作区索引中。
 
@@ -239,6 +317,6 @@ CLI 与桌面端共用磁盘写锁。两种标签分别是正文分片与工作�
 
 没有本地待写状态时，界面重读外部数据。CLI 的 `--activate` 随索引生效。若界面还有防抖草稿、脏页、脏索引或正在保存，收到外部变更会显示冲突，即使两次操作涉及不同页。冲突时先把需要保留的编辑复制出来，再在桌面端选择 **从磁盘重载** 或 **用本地覆盖保存**。前者丢弃未保存编辑，后者可覆盖外部版本。
 
-CLI 遇到退出码 4 时先重读，再检查原操作是否仍然合适。追加重读目标页的 `etag`。改名或删除重读索引的 `indexEtag`，删除还要核对后代。一次命令意外退出时先检查磁盘结果，以免重复追加。保留锁文件，由 CLI 与桌面程序管理。
+CLI 遇到退出码 4 时先重读，再检查原操作是否仍然合适。追加或整页替换前重读目标页的 `etag`。改名或删除重读索引的 `indexEtag`，删除还要核对后代。一次命令意外退出时先检查磁盘结果，以免重复追加或替换。保留锁文件，由 CLI 与桌面程序管理。
 
 <!-- #endregion desktop-sync -->

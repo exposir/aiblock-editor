@@ -6,7 +6,7 @@
 
 ```text
 .
-├── .github/workflows/      # GitHub Pages 文档发布
+├── .github/workflows/      # CI、macOS 发布与文档发布
 ├── build/                  # 应用图标源文件、PNG 和 macOS .icns
 ├── docs/
 │   ├── .vitepress/         # 站点配置和主题
@@ -86,6 +86,24 @@ pnpm docs:preview                     # 预览构建产物
 ```
 
 文档站的部署路径是 `/aiblock-editor/`。本地预览用终端输出的站点地址。工作流在 `main` 收到推送或手动触发时构建并发布 GitHub Pages。
+
+## CI 与发布
+
+`.github/workflows/ci.yml` 在推送到 `main` 和针对 `main` 的拉取请求上运行，使用 Node.js 24 和 pnpm 12.21.0。依次执行冻结安装、渲染器与 Electron 两套类型检查、`pnpm test`、渲染器/CLI/Electron/文档四种构建，最后扫描旧品牌字符串。任一阶段失败都会终止流水线。
+
+`.github/workflows/release.yml` 由 `v*` 标签推送或手动触发。`verify` job 复跑类型检查与测试；`build-mac` 在 `macos-14` 上生成 arm64 DMG、CLI 单文件和 Skill 归档，并写入 `SHA256SUMS.txt`。没有 `CSC_LINK` 时使用 ad-hoc 签名；提供 `CSC_LINK` 和 `CSC_KEY_PASSWORD` 后使用 Developer ID 签名；同时提供 `APPLE_ID`、`APPLE_APP_SPECIFIC_PASSWORD` 和 `APPLE_TEAM_ID` 才启用公证。签名权限在 `build/entitlements.mac.plist`。标签发布会通过 `gh release` 创建或更新 Release。
+
+## 主进程日志与错误恢复
+
+主进程把结构化日志写到 `<userData>/logs/main.log`，每行一个 JSON 对象，包含时间、级别、上下文和截断后的详情。日志超过 1 MiB 时轮转为 `main.log.1`。目录权限为 `0700`，文件权限为 `0600`。
+
+渲染进程崩溃会记录 `render-process-gone`，并弹出「工作区显示中断」。可以选择重新加载窗口、打开日志目录或退出。10 秒内再次崩溃会标记为连续崩溃，默认选项变为退出，窗口不会自动重启。未捕获异常、未处理的 Promise 拒绝和图片清理失败也会写入同一日志。排查时先打开日志目录，保留 `main.log` 与轮转文件。
+
+## CSP 与导航边界
+
+桌面窗口只允许加载应用自身文档。主进程拦截导航：HTTP、HTTPS 和 `mailto:` 链接交给系统浏览器，其余目标直接拒绝，子 frame 导航一律阻止。
+
+应用文档会附加 CSP：默认只允许同源资源；脚本只允许同源，开发模式额外允许 `127.0.0.1` 的 Vite 服务和 HMR WebSocket；`worker-src` 允许 `blob:`；样式允许内联；图片允许同源、`aiblock-asset:`、`blob:`、`data:` 和 HTTP(S)；连接允许同源、`aiblock-asset:`、`blob:` 和开发模式回环；`object-src` 为 `none`，并禁止被其他页面嵌入。图片资产响应另带 `Content-Security-Policy: default-src 'none'` 和 `X-Content-Type-Options: nosniff`。
 
 ## 浏览器滚动与压测
 

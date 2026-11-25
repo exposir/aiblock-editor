@@ -1,5 +1,6 @@
 import { EditorContent, useEditor } from '@tiptap/react'
 import type { Editor, Extensions, JSONContent } from '@tiptap/core'
+import type { Node as ProseMirrorNode } from '@tiptap/pm/model'
 import { TextSelection } from '@tiptap/pm/state'
 import { useEffect, useLayoutEffect, useRef, useState } from 'react'
 import { CommentSidebar } from '../components/CommentSidebar'
@@ -8,6 +9,7 @@ import { BlockHandleOverlay } from '../editor/components/BlockHandleOverlay'
 import { BubbleToolbar } from '../editor/components/BubbleToolbar'
 import { ImageOverlay } from '../editor/components/ImageOverlay'
 import { pasteImageFiles, setImageTransferHost } from '../editor/extensions/image-block'
+import { changedNodes, textEdits } from '../editor/extensions/document-changes'
 import type { ImageAttributes } from '../editor/extensions/image-attributes'
 import { InlineMathOverlay } from '../editor/components/InlineMathOverlay'
 import { CodeBlockOverlay } from '../editor/components/CodeBlockOverlay'
@@ -16,6 +18,7 @@ import { revealAnchor, revealBlock } from '../editor/components/reveal-anchor'
 import { commentAnchor, openSlashMenu } from '../editor/extensions'
 import { isMarkdownFile } from '../editor/markdown/markdown-files'
 import { formatPageHash } from './page-store'
+import { isAssetId, parseImageAssetId } from './asset-format'
 import type { PageChanges, PageRecord } from './page-store'
 
 export type EditPage = (id: string, patch: PageChanges | ((page: PageRecord) => PageChanges), deferred?: boolean) => void
@@ -29,6 +32,7 @@ interface PageEditorProps {
   readonly onEditorReady: (pageId: string, editor: Editor) => void
   readonly onEdit: EditPage
   readonly onStageContent: (id: string, read: () => JSONContent) => void
+  readonly onHoldImageAssets?: (id: string, assets: ReadonlySet<string> | null) => void
   readonly onImport: (file: File) => void
   readonly onDetachedImages?: (pageId: string, images: readonly ImageAttributes[], pos: number) => Promise<void>
   readonly onNotice?: (notice: string) => void
@@ -42,7 +46,7 @@ function hasFilePayload(data: DataTransfer) {
   return data.types.includes('Files') || [...data.items].some(item => item.kind === 'file')
 }
 
-export function PageEditor({ page, extensions, anchor, commentsOpen, onCommentsOpen, onEditorReady, onEdit, onStageContent, onImport, onDetachedImages, onNotice }: PageEditorProps) {
+export function PageEditor({ page, extensions, anchor, commentsOpen, onCommentsOpen, onEditorReady, onEdit, onStageContent, onHoldImageAssets, onImport, onDetachedImages, onNotice }: PageEditorProps) {
   const surface = useRef<HTMLElement>(null)
   const initialContent = useRef(page.content)
   const normalizedOnMount = useRef(false)
@@ -50,6 +54,14 @@ export function PageEditor({ page, extensions, anchor, commentsOpen, onCommentsO
   const [overlayHost, setOverlayHost] = useState<HTMLDivElement | null>(null)
   const [activeComment, setActiveComment] = useState<string | null>(null)
   const [dragDepth, setDragDepth] = useState(0)
+  const historyAssets = useRef(new Set<string>())
+  function holdImage(node: ProseMirrorNode) {
+    if (node.type.name !== 'imageBlock') return
+    const asset = node.attrs.assetId
+    const source = parseImageAssetId(node.attrs.src)
+    if (isAssetId(asset)) historyAssets.current.add(asset)
+    if (source) historyAssets.current.add(source)
+  }
   const editor = useEditor({
     extensions,
     content: initialContent.current,
@@ -57,6 +69,9 @@ export function PageEditor({ page, extensions, anchor, commentsOpen, onCommentsO
       attributes: { class: 'document-editor', 'aria-label': '文档正文', role: 'textbox', 'aria-multiline': 'true' },
     },
     onTransaction: ({ editor, transaction, appendedTransactions }) => {
+      if (onHoldImageAssets && [transaction, ...appendedTransactions].some(tr => tr.docChanged && !textEdits(tr))) {
+        changedNodes(transaction.before, editor.state.doc, holdImage)
+      }
       if (!editor.isInitialized && (transaction.docChanged || appendedTransactions.some(tr => tr.docChanged))) {
         normalizedOnMount.current = true
       }
@@ -84,6 +99,13 @@ export function PageEditor({ page, extensions, anchor, commentsOpen, onCommentsO
   useLayoutEffect(() => {
     if (editor) onEditorReady(page.id, editor)
   }, [editor, onEditorReady, page.id])
+  useLayoutEffect(() => {
+    if (!editor || !onHoldImageAssets) return
+    // An image removed from the document can still be restored by this editor's history.
+    editor.state.doc.descendants(holdImage)
+    onHoldImageAssets(page.id, historyAssets.current)
+    return () => onHoldImageAssets(page.id, null)
+  }, [editor, onHoldImageAssets, page.id])
 
   useLayoutEffect(() => {
     if (!editor) return

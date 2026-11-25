@@ -7,9 +7,11 @@ import { appSlug } from '../app-identity'
 import { assignMissingBlockIds } from '../editor/extensions/block-id'
 import { docToMarkdown, markdownToDoc } from '../editor/markdown/markdown-codec'
 import { createDocumentSchema } from '../editor/schema'
-import type { Schema } from '@tiptap/pm/model'
+import type { Node as ProseMirrorNode, Schema } from '@tiptap/pm/model'
+import { openImageAssetFiles, readImageImport, scanOrphanImageAssets } from '../workspace/asset-files'
 import { isPageId, isWorkspaceIndex, pageMetadata } from '../workspace/workspace-format'
 import type { PageMetadata, PageShard, WorkspaceIndex } from '../workspace/workspace-format'
+import { searchWorkspacePages } from '../workspace/workspace-search'
 import { openWorkspaceFiles } from '../workspace/workspace-files'
 import type { WorkspaceFiles } from '../workspace/workspace-files'
 import { CliError, conflictError, contentError, notFoundError } from './errors'
@@ -63,6 +65,17 @@ function pageContent(schema: Schema, shard: PageShard) {
   }
 }
 
+function hasVisibleContent(doc: ProseMirrorNode) {
+  let visible = false
+  doc.descendants(node => {
+    if (node.isText && node.text?.trim()) visible = true
+    if (node.type.name === 'imageBlock' || node.type.name === 'image' ||
+        node.type.name === 'horizontalRule' || node.type.name === 'table' ||
+        node.type.name === 'inlineMath' && String(node.attrs.latex ?? '').trim()) visible = true
+  })
+  return visible
+}
+
 function metadata(page: PageMetadata) {
   const { id, parentId, title, icon, order, updatedAt } = page
   return { id, parentId, title, icon, order, updatedAt }
@@ -99,6 +112,22 @@ export async function listPages(files: WorkspaceFiles) {
     activePageId: index.value?.activePageId ?? null,
     pages: index.value?.pages.map(metadata) ?? [],
     indexEtag: index.etag,
+  }
+}
+
+export async function searchPages(files: WorkspaceFiles, query: string, limit: number) {
+  const indexSnapshot = await files.readIndexSnapshot()
+  const index = indexSnapshot.value
+  if (!index) return { query, matches: [] }
+  const hits = await searchWorkspacePages(index.pages, async id => (await files.readPage(id))?.content ?? null, query, { limit })
+  const pages = new Map(index.pages.map(page => [page.id, page]))
+  return {
+    query,
+    matches: hits.map(hit => ({
+      page: metadata(pages.get(hit.pageId)!),
+      titleMatch: hit.match === 'title',
+      snippets: hit.match === 'body' ? [hit.snippet] : [],
+    })),
   }
 }
 
@@ -197,6 +226,37 @@ export async function appendPage(files: WorkspaceFiles, id: string, input: {
   })
 }
 
+export async function updatePage(files: WorkspaceFiles, id: string, input: {
+  ifMatch: string
+  markdown: string
+  dryRun: boolean
+}) {
+  if (!isPageId(id)) throw notFoundError(`页面 ID 无效：${id}`)
+  if (!input.markdown.trim()) throw contentError('替换内容为空。')
+  return files.mutate(async transaction => {
+    const indexSnapshot = await transaction.readIndexSnapshot()
+    const index = requireIndex(indexSnapshot.value)
+    findIndexPage(index, id)
+    const pageSnapshot = await transaction.readPageSnapshot(id)
+    if (!pageSnapshot.value) throw notFoundError(`页面不存在：${id}`)
+    checkEtag(pageSnapshot.etag, input.ifMatch, '页面')
+    const doc = parseMarkdown(workspaceSchema, input.markdown)
+    if (!hasVisibleContent(doc)) throw contentError('替换内容为空。', '提供至少一个可见块。')
+    const now = Date.now()
+    const nextPage = shard(id, doc.toJSON(), now)
+    const nextIndex: WorkspaceIndex = {
+      ...index,
+      pages: index.pages.map(page => page.id === id ? { ...page, updatedAt: now } : page),
+    }
+    if (!isWorkspaceIndex(nextIndex)) throw contentError('生成的索引不符合工作区格式。')
+    if (input.dryRun) return { dryRun: true, pageId: id, etag: pageSnapshot.etag, indexEtag: indexSnapshot.etag }
+    await transaction.write({ index: nextIndex, pages: [nextPage], removedPageIds: [] })
+    const nextPageSnapshot = await transaction.readPageSnapshot(id)
+    const nextIndexSnapshot = await transaction.readIndexSnapshot()
+    return { pageId: id, etag: nextPageSnapshot.etag, indexEtag: nextIndexSnapshot.etag }
+  })
+}
+
 export async function renamePage(files: WorkspaceFiles, id: string, input: {
   title: string
   ifMatch: string
@@ -281,6 +341,31 @@ export async function deletePage(files: WorkspaceFiles, id: string, input: {
   })
 }
 
+export async function addImageAsset(files: WorkspaceFiles, path: string, dryRun: boolean) {
+  const input = await readImageImport(path)
+  if (!input) throw notFoundError(`图片文件不存在：${path}`, '检查文件路径后重试。')
+  const imported = await openImageAssetFiles(files.directory).importImage(input, dryRun)
+  const result = { asset: imported.asset, markdown: `![](asset:${imported.asset.id})`, created: imported.created }
+  return dryRun ? { ...result, dryRun: true } : result
+}
+
+export async function collectGarbage(files: WorkspaceFiles, input: { graceMs: number; dryRun: boolean }) {
+  const assets = openImageAssetFiles(files.directory)
+  const result = await scanOrphanImageAssets(files, assets, {
+    graceMs: input.graceMs,
+    dryRun: input.dryRun,
+    validatePage: page => { pageContent(workspaceSchema, page) },
+  })
+  const report = {
+    scannedPages: result.scannedPages,
+    referencedCount: result.referencedCount,
+    orphanIds: result.orphanIds,
+    removedCount: result.removedCount,
+    reclaimedBytes: result.reclaimedBytes,
+  }
+  return input.dryRun ? { ...report, dryRun: true } : report
+}
+
 export async function readMarkdownInput(value: string | undefined, options: {
   required: boolean
   readStdin: () => Promise<string>
@@ -291,10 +376,16 @@ export async function readMarkdownInput(value: string | undefined, options: {
     return options.readStdin()
   }
   if (value === '-') return options.readStdin()
+  let bytes: Buffer
   try {
-    return await readFile(resolve(options.cwd, value), 'utf8')
+    bytes = await readFile(resolve(options.cwd, value))
   } catch (error) {
     throw new CliError('io_error', `无法读取 Markdown 文件：${value}`, error instanceof Error ? error.message : undefined)
+  }
+  try {
+    return new TextDecoder('utf-8', { fatal: true }).decode(bytes)
+  } catch {
+    throw contentError(`Markdown 文件不是有效的 UTF-8：${value}`, '改用 UTF-8 编码保存后重试。')
   }
 }
 

@@ -19,13 +19,16 @@ import { WorkspaceDialog } from './workspace/WorkspaceDialog'
 import type { WorkspaceDialogRequest } from './workspace/WorkspaceDialog'
 import { WorkspaceNavigation } from './workspace/WorkspaceNavigation'
 import type { NavigationView, PageAction } from './workspace/WorkspaceNavigation'
+import { conflictPreviewPrefix, markdownDiff, maxMarkdownDiffCharacters } from './workspace/markdown-diff'
+import type { MarkdownDiff } from './workspace/markdown-diff'
 import {
   DEFAULT_PAGE_TITLE, activatePage, addPage, copyPage, findPage, formatPageHash, hasPageContent,
-  importMarkdownPage, movePage, pageAncestors, pageTitle, removePage, updatePage,
+  importMarkdownPage, movePage, pageAncestors, pageTitle, restoreTrashedPage, trashPage, updatePage,
 } from './workspace/page-store'
 import type { WorkspacePage, WorkspaceState } from './workspace/page-store'
 import type { WorkspacePersistence } from './workspace/workspace-format'
 import { newPageIdentity, useWorkspace } from './workspace/useWorkspace'
+import type { WorkspaceConflict } from './workspace/useWorkspace'
 
 const extensions = createEditorExtensions()
 const schema = getSchema(extensions)
@@ -53,8 +56,72 @@ function ThemeControl({ mode, setMode }: Appearance) {
   </button>
 }
 
+type ConflictPreview = MarkdownDiff | { readonly message: string }
+
+function ConflictDiff({ page, editor, conflict }: {
+  page: WorkspacePage; editor: Editor | null; conflict: WorkspaceConflict
+}) {
+  const [result, setResult] = useState<ConflictPreview | null>(null)
+  const readLocalDocument = useEffectEvent(() => editor && !editor.isDestroyed
+    ? editor.state.doc : page.content ? schema.nodeFromJSON(page.content) : null)
+
+  useEffect(() => {
+    let disposed = false
+    setResult(null)
+    async function compare(): Promise<ConflictPreview | undefined> {
+      const bridge = getDesktopBridge()
+      if (!bridge) return { message: '无法读取磁盘版本。' }
+      const shard = await bridge.readPage(conflictPreviewPrefix + page.id)
+      if (disposed) return
+      if (!shard) return { message: '该页面在磁盘上不存在。' }
+      const local = readLocalDocument()
+      if (!local) return { message: '当前页面尚未载入。' }
+      const disk = schema.nodeFromJSON(shard.content)
+      disk.check()
+      if (Math.max(disk.content.size, local.content.size) > maxMarkdownDiffCharacters) return { truncated: true }
+      return markdownDiff(docToMarkdown(disk), docToMarkdown(local))
+    }
+    void compare().then(
+      value => { if (!disposed && value) setResult(value) },
+      () => { if (!disposed) setResult({ message: '无法读取磁盘版本。可收起差异后重试。' }) },
+    )
+    return () => { disposed = true }
+  }, [page.id, conflict])
+
+  return <section id="workspace-conflict-diff" className="workspace-conflict-diff" aria-labelledby="workspace-diff-label">
+    <h2 id="workspace-diff-label">当前页正文差异</h2>
+    {!result ? <p role="status">正在读取磁盘版本…</p>
+      : 'message' in result ? <p role="status">{result.message}</p>
+      : result.truncated ? <p role="status">正文超出可比较的长度，差异预览已截断。</p>
+      : result.added === 0 && result.removed === 0 ? <p role="status">当前页正文没有差异。请另行核对标题、评论或其他页面。</p>
+      : <>
+          <p>以磁盘版为基准，本地新增 {result.added} 行，移除 {result.removed} 行。</p>
+          <pre className="workspace-diff-lines" tabIndex={0} aria-label="Markdown 差异">{result.lines.map((line, index) =>
+            <span key={index} data-change={line.kind}><span>{line.kind === 'added' ? '+' : line.kind === 'removed' ? '−' : ' '}</span>{line.text}</span>,
+          )}</pre>
+        </>}
+  </section>
+}
+
+function ExternalConflictNotice({ conflict, page, editor, keepLocal, reloadExternal }: {
+  conflict: WorkspaceConflict; page: WorkspacePage; editor: Editor | null
+  keepLocal(): void; reloadExternal(): void
+}) {
+  const [expanded, setExpanded] = useState(false)
+  return <div className="workspace-conflict">
+    <div className="workspace-conflict-actions">
+      <span role="alert">{conflict.locked ? '工作区正被另一个写入方占用。' : '磁盘上的工作区已被外部修改，本地还有未保存的编辑。'}</span>
+      <button type="button" aria-expanded={expanded} aria-controls={expanded ? 'workspace-conflict-diff' : undefined}
+        onClick={() => setExpanded(open => !open)}>{expanded ? '收起差异' : '查看差异'}</button>
+      <button type="button" onClick={reloadExternal}>从磁盘重载</button>
+      <button type="button" onClick={keepLocal}>用本地覆盖保存</button>
+    </div>
+    {expanded && <ConflictDiff page={page} editor={editor} conflict={conflict} />}
+  </div>
+}
+
 function Workspace({ workspace, anchor, saveFailed, loadFailed, retry, change, reset, stageContent, loadPage, deferTitle,
-  externalConflict, keepLocal, reloadExternal, appearance }:
+  externalConflict, keepLocal, reloadExternal, searchContent, purgeTrash, holdEditorAssets, appearance }:
   Omit<ReturnType<typeof useWorkspace>, 'workspace'> & { workspace: WorkspaceState<WorkspacePage>; appearance: Appearance },
 ) {
   const help = useRef<HTMLDialogElement>(null)
@@ -186,7 +253,7 @@ function Workspace({ workspace, anchor, saveFailed, loadFailed, retry, change, r
                 if (!latest || pageTitle(latest) !== DEFAULT_PAGE_TITLE ||
                     current.pages.some(child => child.parentId === id) ||
                     hasPageContent(latest.content ? latest : { ...latest, content: candidate.content })) return current
-                return removePage(current, id, newPageIdentity())
+                return trashPage(current, id, newPageIdentity())
               })
               return
             }
@@ -206,7 +273,9 @@ function Workspace({ workspace, anchor, saveFailed, loadFailed, retry, change, r
     switch (dialog.kind) {
       case 'rename': editPage(dialog.pageId, { title: value.trim() }); break
       case 'move': change(current => movePage(current, dialog.pageId, value || null, Date.now())); break
-      case 'delete': change(current => removePage(current, dialog.pageId, newPageIdentity())); break
+      case 'delete': change(current => trashPage(current, dialog.pageId, newPageIdentity())); break
+      case 'purge': purgeTrash(dialog.pageId); break
+      case 'empty-trash': purgeTrash(); break
       case 'reset': reset(); break
     }
   }
@@ -368,9 +437,11 @@ function Workspace({ workspace, anchor, saveFailed, loadFailed, retry, change, r
       <div className="workspace" data-navigation={navigationOpen} data-comments={commentsOpen}>
         <WorkspaceNavigation workspace={workspace} view={navigationView} open={navigationOpen} editor={editor}
           onView={selectNavigation} onClose={() => setNavigationOpen(false)} onActivate={openPage} onCreate={newPage}
-          onIcon={(id, icon) => editPage(id, { icon })} onAction={(action, id) => void pageAction(action, id)} />
+          onIcon={(id, icon) => editPage(id, { icon })} onAction={(action, id) => void pageAction(action, id)}
+          searchContent={searchContent} onRestore={id => change(current => restoreTrashedPage(current, id))}
+          onPurge={id => setDialog({ kind: 'purge', pageId: id })} onEmptyTrash={() => setDialog({ kind: 'empty-trash' })} />
         {loadedPage ? <PageEditor key={activePage.id} page={loadedPage} extensions={extensions} anchor={anchor} commentsOpen={commentsOpen}
-          onCommentsOpen={showComments} onEditorReady={editorReady} onEdit={editPage} onStageContent={stageContent}
+          onCommentsOpen={showComments} onEditorReady={editorReady} onEdit={editPage} onStageContent={stageContent} onHoldImageAssets={holdEditorAssets}
           onImport={file => void chooseMarkdownFile(file)} onDetachedImages={insertDetachedImages} onNotice={setNotice} />
           : <main className="document-surface" aria-busy={!loadFailed}>
             <div className="workspace-load" role="status">
@@ -378,11 +449,8 @@ function Workspace({ workspace, anchor, saveFailed, loadFailed, retry, change, r
             </div>
           </main>}
       </div>
-      {externalConflict && <div className="workspace-conflict" role="alert">
-        <span>{externalConflict.locked ? '工作区正被另一个写入方占用。' : '磁盘上的工作区已被外部修改，本地还有未保存的编辑。'}</span>
-        <button type="button" onClick={reloadExternal}>从磁盘重载</button>
-        <button type="button" onClick={keepLocal}>用本地覆盖保存</button>
-      </div>}
+      {externalConflict && <ExternalConflictNotice key={activePage.id} conflict={externalConflict} page={activePage} editor={editor}
+        keepLocal={keepLocal} reloadExternal={reloadExternal} />}
       {(notice || saveFailed) && <div className="workspace-notice" role="status">
         {notice || (getDesktopBridge() ? '无法保存工作区。' : '浏览器无法保存工作区。')}
         {notice && <button type="button" className="icon-control" aria-label="关闭提示" onClick={() => setNotice('')}>

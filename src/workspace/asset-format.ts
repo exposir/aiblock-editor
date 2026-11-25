@@ -19,6 +19,7 @@ export interface ImageAssetMetadata {
   readonly height: number
   readonly byteLength: number
   readonly name?: string
+  readonly createdAt?: number
 }
 
 export const maxImageBytes = 32 * 1024 * 1024
@@ -27,6 +28,13 @@ export const imageAssetUrlPrefix = `${imageAssetScheme}://media/`
 
 export function isAssetId(value: unknown): value is string {
   return typeof value === 'string' && /^[a-f0-9]{64}\.(png|jpg|gif|webp)(?![\s\S])/.test(value)
+}
+
+export function parseImageAssetId(value: unknown): string | null {
+  if (typeof value !== 'string') return null
+  const id = value.startsWith('asset:') ? value.slice(6)
+    : value.startsWith(imageAssetUrlPrefix) ? value.slice(imageAssetUrlPrefix.length) : null
+  return isAssetId(id) ? id : null
 }
 
 export function validImageDimensions(width: number, height: number) {
@@ -44,10 +52,10 @@ function knownMime(mime: string): mime is ImageMime {
 
 export function isImageAssetMetadata(value: unknown): value is ImageAssetMetadata {
   if (!value || typeof value !== 'object') return false
-  const { id, mime, width, height, byteLength, name } = value as ImageAssetMetadata
+  const { id, mime, width, height, byteLength, name, createdAt } = value as ImageAssetMetadata
   return isAssetId(id) && typeof mime === 'string' && knownMime(mime) && id.endsWith(`.${extensions[mime]}`) &&
     validImageDimensions(width, height) && Number.isSafeInteger(byteLength) && byteLength > 0 && byteLength <= maxImageBytes &&
-    validName(name)
+    validName(name) && (createdAt === undefined || Number.isFinite(createdAt))
 }
 
 export function hasImageSignature(bytes: Uint8Array, mime: string): mime is ImageMime {
@@ -60,6 +68,10 @@ export function hasImageSignature(bytes: Uint8Array, mime: string): mime is Imag
     case 'image/webp': return at(0, 82, 73, 70, 70) && at(8, 87, 69, 66, 80)
     default: return false
   }
+}
+
+export function detectImageMime(bytes: Uint8Array): ImageMime | undefined {
+  return Object.keys(extensions).find((mime): mime is ImageMime => hasImageSignature(bytes, mime))
 }
 
 export function validateImageInput(value: unknown): asserts value is ImageAssetInput & { mime: ImageMime } {

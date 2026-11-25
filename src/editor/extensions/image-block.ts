@@ -31,6 +31,10 @@ export async function finishImageTransfers() {
   while (transfers.size) await Promise.allSettled([...transfers])
 }
 
+export function hasPendingImageTransfers() {
+  return transfers.size > 0
+}
+
 export function insertImageBlocks(state: EditorState, images: readonly ImageAttributes[], selection = state.selection): Transaction {
   const fragment = Fragment.fromArray(images.map(image => state.schema.nodes.imageBlock!.create(image)))
   return closeHistory(state.tr.setSelection(selection).replaceSelection(new Slice(fragment, 0, 0)))

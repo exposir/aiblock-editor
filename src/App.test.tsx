@@ -1,9 +1,13 @@
 import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
+import type { Editor } from '@tiptap/core'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import App from './App'
+import type { DesktopBridge } from './desktop/bridge'
 import { DEMO_HANDBOOK_ID, createDemoWorkspace } from './workspace/demo-workspace'
 import { WORKSPACE_STORAGE_KEY } from './workspace/page-store'
+import { splitLegacyWorkspace } from './workspace/workspace-format'
+import type { PageShard, WorkspaceExternalChange } from './workspace/workspace-format'
 import { createEditorExtensions } from './editor/extensions'
 import { getSchema } from '@tiptap/core'
 
@@ -17,6 +21,7 @@ describe('App 多页面集成', () => {
    * @partition import: 文件选择、拖放 md、拒绝非 md
    * @partition export: md/json、复制状态重置
    * @partition dialogs-reset: 二次确认、取消和确认
+   * @partition conflicts: 以磁盘正文与实时草稿比较，可收起并继续处理冲突
    * @partition invariants: contenteditable 零原生控件
    */
   beforeEach(() => {
@@ -32,6 +37,7 @@ describe('App 多页面集成', () => {
     localStorage.clear()
     history.replaceState(null, '/')
     vi.restoreAllMocks()
+    vi.unstubAllGlobals()
     vi.useRealTimers()
   })
 
@@ -41,6 +47,114 @@ describe('App 多页面集成', () => {
     await waitFor(() => expect(screen.getByRole('textbox', { name: '文档正文' })).toBeInTheDocument())
     return user
   }
+
+  async function deleteFromTree(user: ReturnType<typeof userEvent.setup>, title: string) {
+    await user.click(screen.getByRole('button', { name: `「${title}」的更多操作` }))
+    await user.click(within(screen.getByRole('group', { name: `${title}的操作` })).getByRole('button', { name: '删除页面' }))
+    const dialog = screen.getByRole('dialog', { name: '删除页面' })
+    await user.click(within(dialog).getByRole('button', { name: '移入回收站' }))
+  }
+
+  it('trash: 从侧栏软删、恢复页面树，再确认永久删除和清空', async () => {
+    const user = await mountApp()
+    const title = '文档协作与发布手册'
+    await deleteFromTree(user, title)
+    expect(screen.queryByRole('button', { name: '试点验收清单' })).not.toBeInTheDocument()
+    await user.click(screen.getByText('回收站', { exact: true }))
+    await user.click(screen.getByRole('button', { name: `恢复「${title}」` }))
+    expect(screen.getByRole('button', { name: '试点验收清单' })).toBeInTheDocument()
+    expect(screen.getByText('回收站为空')).toBeInTheDocument()
+
+    await deleteFromTree(user, title)
+    await user.click(screen.getByText('回收站', { exact: true }))
+    await user.click(screen.getByRole('button', { name: '彻底删除「试点验收清单」' }))
+    let dialog = screen.getByRole('dialog', { name: '彻底删除页面' })
+    await user.click(within(dialog).getByRole('button', { name: '确认彻底删除' }))
+    expect(screen.queryByRole('button', { name: '恢复「试点验收清单」' })).not.toBeInTheDocument()
+    await user.click(screen.getByRole('button', { name: '清空回收站' }))
+    dialog = screen.getByRole('dialog', { name: '清空回收站' })
+    await user.click(within(dialog).getByRole('button', { name: '取消' }))
+    expect(screen.getByRole('button', { name: `恢复「${title}」` })).toBeInTheDocument()
+    await user.click(screen.getByRole('button', { name: '清空回收站' }))
+    await user.click(within(screen.getByRole('dialog', { name: '清空回收站' })).getByRole('button', { name: '确认清空' }))
+    expect(screen.getByText('回收站为空')).toBeInTheDocument()
+  })
+
+  it('search: 补充冷页正文命中、展示片段并跳转', async () => {
+    const user = await mountApp()
+    const query = screen.getByRole('searchbox', { name: '查找页面标题或正文' })
+    await user.type(query, '私有页的访问权限')
+    const hit = await screen.findByRole('button', { name: '打开「架构设计备忘」的正文匹配' })
+    expect(hit).toHaveTextContent('私有页的访问权限')
+    await user.click(hit)
+    expect(query).toHaveValue('')
+    expect(screen.getByRole('textbox', { name: '文档标题' })).toHaveValue('架构设计备忘')
+    expect(await screen.findByRole('textbox', { name: '文档正文' })).toHaveTextContent('私有页的访问权限')
+  })
+
+  async function mountDesktopConflict() {
+    const { index, pages } = splitLegacyWorkspace(JSON.stringify(createDemoWorkspace(schema)))!
+    let changed: ((change: WorkspaceExternalChange) => void) | undefined
+    let diskPage: PageShard | null = pages.find(page => page.id === DEMO_HANDBOOK_ID)!
+    const bridge = {
+      platform: 'darwin',
+      readIndex: async () => index,
+      readPage: vi.fn(async (id: string) => id === DEMO_HANDBOOK_ID || id === `preview:${DEMO_HANDBOOK_ID}` ? diskPage : null),
+      commit: vi.fn<DesktopBridge['commit']>().mockResolvedValue({ conflict: true, files: [DEMO_HANDBOOK_ID] }),
+      setTheme: vi.fn<DesktopBridge['setTheme']>().mockResolvedValue(undefined),
+      openMarkdownFile: vi.fn<DesktopBridge['openMarkdownFile']>(),
+      saveFile: vi.fn<DesktopBridge['saveFile']>(),
+      saveImageAsset: vi.fn<DesktopBridge['saveImageAsset']>(),
+      readImageAssets: vi.fn<DesktopBridge['readImageAssets']>(),
+      onMenuCommand: () => () => {},
+      onExternalChange(listener) {
+        changed = listener
+        return () => { changed = undefined }
+      },
+    } satisfies DesktopBridge
+    vi.stubGlobal('desktop', bridge)
+    await mountApp()
+    const { editor } = screen.getByRole('textbox', { name: '文档正文' }) as HTMLElement & { editor: Editor }
+    await waitFor(() => expect(editor.isInitialized).toBe(true))
+    vi.useFakeTimers()
+    act(() => {
+      editor.commands.setContent('<p>本地未保存的新行</p>')
+      diskPage = { ...diskPage!, content: schema.node('doc', null, schema.node('paragraph', null, schema.text('磁盘旧行'))).toJSON() }
+      changed!({ indexChanged: false, pageIds: [DEMO_HANDBOOK_ID] })
+    })
+    return bridge
+  }
+
+  it('对比磁盘正文和未刷盘草稿，收起差异后仍可从磁盘重载', async () => {
+    const bridge = await mountDesktopConflict()
+    expect(screen.getByRole('alert')).toHaveTextContent('磁盘上的工作区已被外部修改')
+    await act(async () => { fireEvent.click(screen.getByRole('button', { name: '查看差异' })) })
+    const preview = within(screen.getByRole('region', { name: '当前页正文差异' }))
+    expect(preview.getByText('以磁盘版为基准，本地新增 1 行，移除 1 行。')).toBeInTheDocument()
+    expect(preview.getByText('本地未保存的新行')).toBeInTheDocument()
+    expect(preview.getByText('磁盘旧行')).toBeInTheDocument()
+    expect(bridge.readPage).toHaveBeenLastCalledWith(`preview:${DEMO_HANDBOOK_ID}`)
+    expect(bridge.commit).not.toHaveBeenCalled()
+    fireEvent.click(screen.getByRole('button', { name: '收起差异' }))
+    expect(screen.queryByRole('region', { name: '当前页正文差异' })).not.toBeInTheDocument()
+    await act(async () => { fireEvent.click(screen.getByRole('button', { name: '从磁盘重载' })) })
+    expect(screen.getByRole('textbox', { name: '文档正文' })).toHaveTextContent('磁盘旧行')
+    expect(screen.queryByRole('button', { name: '查看差异' })).not.toBeInTheDocument()
+  })
+
+  it('收起差异后忽略旧读取，并在重新打开时说明磁盘页已不在', async () => {
+    const bridge = await mountDesktopConflict()
+    let finish!: (page: PageShard | null) => void
+    bridge.readPage.mockImplementationOnce(() => new Promise(resolve => { finish = resolve }))
+    fireEvent.click(screen.getByRole('button', { name: '查看差异' }))
+    expect(screen.getByText('正在读取磁盘版本…')).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: '收起差异' }))
+    bridge.readPage.mockResolvedValueOnce(null)
+    await act(async () => { fireEvent.click(screen.getByRole('button', { name: '查看差异' })) })
+    await act(async () => { finish({ id: DEMO_HANDBOOK_ID, updatedAt: 1, content: { type: 'doc', content: [{ type: 'paragraph' }] } }) })
+    expect(screen.getByText('该页面在磁盘上不存在。')).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: '用本地覆盖保存' })).toBeEnabled()
+  })
 
   it('shell: 顶栏展示手册根页和标题，侧栏可切页面/目录及显示评论', async () => {
     const user = await mountApp()

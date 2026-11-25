@@ -67,4 +67,28 @@ describe('Mermaid rendering', () => {
     expect(await renderMermaid('flowchart TD\nA-->NotVisible', false, () => false)).toBeNull()
     expect(library.render.mock.calls.length).toBe(before)
   })
+
+  it('scheduling: yields between expensive uncached renders', async () => {
+    library.render.mockResolvedValue({ svg: '<svg />' })
+    const before = library.render.mock.calls.length
+    const first = renderMermaid('flowchart TD\nA-->YieldFirst', false)
+    const second = renderMermaid('flowchart TD\nA-->YieldSecond', false)
+    await first
+    expect(library.render.mock.calls.length - before).toBe(1)
+    expect(await second).toEqual({ svg: '<svg />' })
+    expect(library.render.mock.calls.length - before).toBe(2)
+  })
+
+  it('scheduling: skips an off-screen task that leaves before its frame starts', async () => {
+    let release!: (value: { svg: string }) => void
+    library.render.mockImplementationOnce(() => new Promise(resolve => { release = resolve }))
+    const before = library.render.mock.calls.length
+    const first = renderMermaid('flowchart TD\nA-->Blocking', false)
+    const skipped = renderMermaid('flowchart TD\nA-->Skipped', false, () => false)
+    await vi.waitFor(() => expect(library.render.mock.calls.length - before).toBe(1))
+    release({ svg: '<svg>blocking</svg>' })
+    await first
+    expect(await skipped).toBeNull()
+    expect(library.render.mock.calls.length - before).toBe(1)
+  })
 })

@@ -55,12 +55,15 @@ export function mermaidConfig(dark: boolean): MermaidConfig {
 let queue = Promise.resolve()
 let diagramId = 0
 const cache = new Map<string, DiagramResult>()
-const maxCacheEntries = 24
+const maxCacheEntries = 64
 const maxCachedDiagramLength = 160_000
+let yieldBeforeRender = false
 
 export interface DiagramResult {
   readonly svg: string
 }
+
+const yieldToBrowser = () => new Promise<void>(resolve => setTimeout(resolve, 0))
 
 export function renderMermaid(source: string, dark: boolean, wanted = () => true): Promise<DiagramResult | null> {
   const key = `${dark ? 'dark' : 'light'}\n${source}`
@@ -73,6 +76,12 @@ export function renderMermaid(source: string, dark: boolean, wanted = () => true
   const result = queue.then(async () => {
     const alreadyRendered = cache.get(key)
     if (alreadyRendered) return alreadyRendered
+    if (yieldBeforeRender) {
+      yieldBeforeRender = false
+      await yieldToBrowser()
+    }
+    const renderedWhileWaiting = cache.get(key)
+    if (renderedWhileWaiting) return renderedWhileWaiting
     if (!wanted() || !source.trim()) return null
     try {
       const { default: mermaid } = await import('mermaid')
@@ -85,8 +94,10 @@ export function renderMermaid(source: string, dark: boolean, wanted = () => true
         cache.set(key, diagram)
         if (cache.size > maxCacheEntries) cache.delete(cache.keys().next().value!)
       }
+      yieldBeforeRender = true
       return diagram
     } catch {
+      yieldBeforeRender = true
       return null
     }
   })
