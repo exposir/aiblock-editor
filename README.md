@@ -12,7 +12,7 @@
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="docs/public/images/editor-dark.png">
   <source media="(prefers-color-scheme: light)" srcset="docs/public/images/editor-light.png">
-  <img src="docs/public/images/editor-light.png" width="1440" height="900" alt="AIBlock Editor 的页面树、正文和评论侧栏">
+  <img src="docs/public/images/editor-light.png" alt="AIBlock Editor 的页面树、正文和评论侧栏">
 </picture>
 
 ## 能做什么
