@@ -4,10 +4,14 @@ import { createElement } from 'react'
 import { afterEach, beforeEach, describe, expect, it, onTestFinished, vi } from 'vitest'
 import App from '../App'
 import {
-  THEME_MEDIA_QUERY, THEME_REDUCED_MOTION_QUERY, THEME_STORAGE_KEY,
-  parseThemeMode, readThemeMode, resolveTheme, syncTheme, toggleResolvedTheme,
+  THEME_MEDIA_QUERY, THEME_PRESET_STORAGE_KEY, THEME_REDUCED_MOTION_QUERY, THEME_STORAGE_KEY,
+  parseThemeMode, readThemeMode, readThemePreset, resolveTheme, syncAppearance, syncTheme, toggleResolvedTheme,
 } from './theme'
 import type { ThemeMode } from './theme'
+import {
+  contrastRatio, parseThemePreset, themePresetList, themePresetPalette, themePresetVariableNames,
+  themePresetVariables,
+} from './theme-presets'
 
 function systemPreference(dark: boolean, reduced = false) {
   const media = new EventTarget()
@@ -54,7 +58,10 @@ afterEach(() => {
   localStorage.clear()
   history.replaceState(null, '', '/')
   delete document.documentElement.dataset.theme
+  delete document.documentElement.dataset.themePreset
   delete document.documentElement.dataset.themeTransitioning
+  for (const name of themePresetVariableNames) document.documentElement.style.removeProperty(name)
+  document.documentElement.style.removeProperty('background-color')
   document.documentElement.style.removeProperty('color-scheme')
   Reflect.deleteProperty(document, 'startViewTransition')
 })
@@ -318,5 +325,127 @@ describe('theme preference', () => {
     expect(localStorage.getItem(THEME_STORAGE_KEY)).toBe(expected)
     expect(screen.getByRole('textbox', { name: '文档正文' })).toBe(editor)
     view.unmount()
+  })
+})
+
+describe('theme presets', () => {
+  it('ships 16 presets with orthogonal light and dark palettes', () => {
+    expect(themePresetList).toHaveLength(16)
+    expect(themePresetList.map(preset => preset.id)).toEqual([
+      'paper', 'notion', 'lark', 'bear', 'github', 'twitter', 'gopro', 'space-ai',
+      'linear', 'obsidian', 'catppuccin', 'tokyo-night', 'nord', 'solarized', 'gruvbox', 'dracula',
+    ])
+    expect(themePresetList.filter(preset => preset.group === 'editorial')).toHaveLength(4)
+    expect(themePresetList.filter(preset => preset.group === 'brand')).toHaveLength(6)
+    expect(themePresetList.filter(preset => preset.group === 'developer')).toHaveLength(6)
+    for (const preset of themePresetList) {
+      for (const variant of ['light', 'dark'] as const) {
+        expect(themePresetPalette(preset.id, variant).workspace).toMatch(/^#[0-9A-F]{6}$/i)
+      }
+    }
+  })
+
+  it('meets the WCAG contrast gates for all 32 preset variants', () => {
+    for (const preset of themePresetList) {
+      for (const variant of ['light', 'dark'] as const) {
+        const palette = themePresetPalette(preset.id, variant)
+        const label = `${preset.id}:${variant}`
+        expect(contrastRatio(palette.inkStrong, palette.paper), `${label} inkStrong`).toBeGreaterThanOrEqual(4.5)
+        expect(contrastRatio(palette.ink, palette.paper), `${label} ink`).toBeGreaterThanOrEqual(4.5)
+        expect(contrastRatio(palette.inkSecondary, palette.paper), `${label} inkSecondary`).toBeGreaterThanOrEqual(3.2)
+        expect(contrastRatio(palette.inkOnAccent, palette.accent), `${label} inkOnAccent`).toBeGreaterThanOrEqual(3)
+        expect(contrastRatio(palette.syntax.keyword, palette.code), `${label} keyword`).toBeGreaterThanOrEqual(3.5)
+        expect(contrastRatio(palette.syntax.string, palette.code), `${label} string`).toBeGreaterThanOrEqual(3.5)
+        expect(contrastRatio(palette.syntax.title, palette.code), `${label} title`).toBeGreaterThanOrEqual(3.5)
+      }
+    }
+  })
+
+  it('reads and persists presets with invalid values falling back to paper', () => {
+    systemPreference(false)
+    expect(parseThemePreset(null)).toBe('paper')
+    expect(parseThemePreset('sepia')).toBe('paper')
+    expect(parseThemePreset('notion')).toBe('notion')
+    localStorage.setItem(THEME_PRESET_STORAGE_KEY, 'github')
+    expect(readThemePreset(window)).toBe('github')
+    localStorage.setItem(THEME_PRESET_STORAGE_KEY, 'sepia')
+    expect(readThemePreset(window)).toBe('paper')
+
+    const stop = syncAppearance(window, 'light', 'notion')
+    expect(document.documentElement).toHaveAttribute('data-theme-preset', 'notion')
+    expect(localStorage.getItem(THEME_PRESET_STORAGE_KEY)).toBe('notion')
+    stop()
+  })
+
+  it('uses the Electron startup preset ahead of browser storage', () => {
+    systemPreference(false)
+    vi.stubGlobal('desktop', { initialThemePreset: 'space-ai' })
+    localStorage.setItem(THEME_PRESET_STORAGE_KEY, 'notion')
+    expect(readThemePreset(window)).toBe('space-ai')
+  })
+
+  it('applies preset variables, refreshes them across light and dark, and clears overrides for paper', () => {
+    systemPreference(false)
+    const lightStop = syncAppearance(window, 'light', 'notion')
+    expect(document.documentElement).toHaveAttribute('data-theme-preset', 'notion')
+    expect(document.documentElement.style.getPropertyValue('--bg-workspace')).toBe('#F7F7F5')
+    expect(document.documentElement.style.getPropertyValue('--bg-paper')).toBe('#FFFFFF')
+    lightStop()
+
+    const darkStop = syncAppearance(window, 'dark', 'notion')
+    expect(document.documentElement.style.getPropertyValue('--bg-workspace')).toBe('#191919')
+    expect(document.documentElement.style.getPropertyValue('--bg-paper')).toBe('#202020')
+    darkStop()
+
+    const paperStop = syncAppearance(window, 'light', 'paper')
+    expect(document.documentElement).toHaveAttribute('data-theme-preset', 'paper')
+    for (const name of themePresetVariableNames) {
+      expect(document.documentElement.style.getPropertyValue(name)).toBe('')
+    }
+    paperStop()
+  })
+
+  it('uses the shared View Transition coordinator for preset changes', async () => {
+    systemPreference(false)
+    const initial = syncAppearance(window, 'light', 'paper')
+    const transition = viewTransitionSupport()
+    const next = syncAppearance(window, 'light', 'github')
+    expect(transition.startViewTransition).toHaveBeenCalledOnce()
+    expect(document.documentElement).toHaveAttribute('data-theme-transitioning', 'true')
+    expect(document.documentElement.style.getPropertyValue('--bg-workspace')).toBe('#F6F8FA')
+    transition.finish()
+    await waitFor(() => expect(document.documentElement).not.toHaveAttribute('data-theme-transitioning'))
+    initial()
+    next()
+  })
+
+  it('interrupts a rapid preset switch and leaves the newest preset applied', async () => {
+    systemPreference(false)
+    const initial = syncAppearance(window, 'light', 'paper')
+    const transition = viewTransitionSupport()
+    const notion = syncAppearance(window, 'light', 'notion')
+    expect(transition.startViewTransition).toHaveBeenCalledOnce()
+    const github = syncAppearance(window, 'light', 'github')
+    expect(transition.skipTransition).toHaveBeenCalledOnce()
+    expect(document.documentElement).toHaveAttribute('data-theme-preset', 'github')
+    expect(document.documentElement.style.getPropertyValue('--bg-workspace')).toBe('#F6F8FA')
+    transition.finish()
+    await waitFor(() => expect(document.documentElement).not.toHaveAttribute('data-theme-transitioning'))
+    initial()
+    notion()
+    github()
+  })
+
+  it('returns a complete variable map for every non-paper preset and an empty paper override', () => {
+    for (const preset of themePresetList) {
+      for (const variant of ['light', 'dark'] as const) {
+        const variables = themePresetVariables(preset.id, variant)
+        if (preset.id === 'paper') expect(variables).toEqual({})
+        else {
+          expect(Object.keys(variables).sort()).toEqual([...themePresetVariableNames].sort())
+          for (const name of themePresetVariableNames) expect(variables[name]).toBeTruthy()
+        }
+      }
+    }
   })
 })

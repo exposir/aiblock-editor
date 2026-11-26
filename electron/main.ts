@@ -10,8 +10,12 @@ import { imageAssetScheme } from '../src/workspace/asset-format.js'
 import { conflictPreviewPrefix } from '../src/workspace/markdown-diff.js'
 import type { WorkspaceCloseResult, WorkspaceCommitOptions, WorkspaceExternalChange } from '../src/workspace/workspace-format.js'
 import type { DesktopMenuCommand } from '../src/desktop/bridge.js'
-import { isThemeMode, parseThemeMode, themeBackgrounds, themeLabels, themeModes } from '../src/theme/theme.js'
+import { isThemeMode, parseThemeMode, themeLabels, themeModes } from '../src/theme/theme.js'
 import type { ThemeMode } from '../src/theme/theme.js'
+import {
+  isThemePresetId, parseThemePreset, themePresetBackground, themePresetList,
+} from '../src/theme/theme-presets.js'
+import type { ThemePresetId } from '../src/theme/theme-presets.js'
 import { createMainLogger, createRendererRecovery } from './logger.js'
 import { contentSecurityPolicy, decideNavigation, developmentUrl, externalUrl, isAppDocument } from './security.js'
 import { createImageAssetFiles, createWorkspaceFiles, isSaveFileOptions, pruneOrphanImageAssets, readMarkdownFile, readOptionalText, writeAtomicText } from './storage.js'
@@ -109,18 +113,19 @@ function installNavigationPolicy(window: BrowserWindow) {
   })
 }
 
-function windowBackground() {
-  return themeBackgrounds[nativeTheme.shouldUseDarkColors ? 'dark' : 'light']
-}
-
-function installTheme(path: string) {
+function installTheme(path: string, presetPath: string, initialPreset: ThemePresetId) {
   let pending = Promise.resolve()
+  let currentPreset = initialPreset
+  const background = () => themePresetBackground(currentPreset, nativeTheme.shouldUseDarkColors ? 'dark' : 'light')
   function updateWindow() {
-    mainWindow?.setBackgroundColor(windowBackground())
+    mainWindow?.setBackgroundColor(background())
   }
   nativeTheme.on('updated', updateWindow)
   ipcMain.on(channels.initialTheme, event => {
     event.returnValue = isTrustedSender(event) ? nativeTheme.themeSource : null
+  })
+  ipcMain.on(channels.initialThemePreset, event => {
+    event.returnValue = isTrustedSender(event) ? currentPreset : null
   })
 
   function setTheme(mode: ThemeMode): Promise<void> {
@@ -133,14 +138,35 @@ function installTheme(path: string) {
     return pending
   }
 
+  function setThemePreset(preset: ThemePresetId): Promise<void> {
+    if (currentPreset === preset) return pending
+    currentPreset = preset
+    updateWindow()
+    const item = Menu.getApplicationMenu()?.getMenuItemById(`theme-preset-${preset}`)
+    if (item) item.checked = true
+    pending = pending.then(() => writeAtomicText(presetPath, preset)).catch(reportError)
+    return pending
+  }
+
   trustedHandler(channels.setTheme, (_window, mode) => {
     if (!isThemeMode(mode)) throw new TypeError('Invalid theme preference')
     return setTheme(mode)
   })
-  return { setTheme, drain: () => pending }
+  trustedHandler(channels.setThemePreset, (_window, preset) => {
+    if (!isThemePresetId(preset)) throw new TypeError('Invalid theme preset')
+    return setThemePreset(preset)
+  })
+  return {
+    setTheme, setThemePreset, background,
+    preset: () => currentPreset, drain: () => pending,
+  }
 }
 
-function installMenu(setTheme: (mode: ThemeMode) => Promise<void>) {
+function installMenu(
+  setTheme: (mode: ThemeMode) => Promise<void>,
+  setThemePreset: (preset: ThemePresetId) => Promise<void>,
+  currentPreset: () => ThemePresetId,
+) {
   function action(label: string, command: DesktopMenuCommand, accelerator?: string): MenuItemConstructorOptions {
     return {
       label, accelerator,
@@ -192,6 +218,20 @@ function installMenu(setTheme: (mode: ThemeMode) => Promise<void>) {
                 mainWindow?.webContents.send(channels.menuCommand, `theme-${mode}`)
               },
             })),
+            { type: 'separator' },
+            {
+              label: '配色风格',
+              submenu: themePresetList.map(preset => ({
+                id: `theme-preset-${preset.id}`,
+                label: preset.name,
+                type: 'radio' as const,
+                checked: currentPreset() === preset.id,
+                click: () => {
+                  void setThemePreset(preset.id)
+                  mainWindow?.webContents.send(channels.menuCommand, `theme-preset-${preset.id}`)
+                },
+              })),
+            },
           ],
         },
         { type: 'separator' },
@@ -316,7 +356,7 @@ async function createWindow(
       ...saved.bounds,
       minWidth: minimumWindowSize.width,
       minHeight: minimumWindowSize.height,
-      backgroundColor: windowBackground(),
+      backgroundColor: theme.background(),
       show: false,
       ...(isMac ? { titleBarStyle: 'hiddenInset', trafficLightPosition: { x: 16, y: 17 } } : {}),
       webPreferences: {
@@ -450,11 +490,13 @@ if (app.requestSingleInstanceLock()) {
     protocol.handle(imageAssetScheme, request => assets.respond(request, appUrl))
     const statePath = join(directory, 'window-state.json')
     const themePath = join(directory, 'theme')
+    const presetPath = join(directory, 'theme-preset')
     nativeTheme.themeSource = parseThemeMode(await readOptionalText(themePath).catch(() => null))
-    const theme = installTheme(themePath)
+    const preset = parseThemePreset(await readOptionalText(presetPath).catch(() => null))
+    const theme = installTheme(themePath, presetPath, preset)
     const showWindow = () => createWindow(statePath, theme, watcher)
     installFileHandlers(workspace, createWorkspaceFiles(directory), assets)
-    installMenu(theme.setTheme)
+    installMenu(theme.setTheme, theme.setThemePreset, theme.preset)
     app.on('activate', () => { void showWindow().catch(reportError) })
     app.on('second-instance', () => {
       if (!mainWindow) {

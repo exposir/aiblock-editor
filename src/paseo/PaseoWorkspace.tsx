@@ -12,7 +12,7 @@ import type { PaseoNavigationView } from './PaseoNavigation'
 import type { PaseoAgent, PaseoAgentLogs, PaseoTreeSnapshot, PaseoWorkspace as PaseoWorkspaceRecord } from './paseo-types'
 
 export const PASEO_SELECTION_STORAGE_KEY = 'aiblock-editor.paseo.agent.v1'
-export const PASEO_MESSAGE_ORDER_STORAGE_KEY = '{{SECRET_x8m96b1o}}'
+export const PASEO_MESSAGE_ORDER_STORAGE_KEY = 'aiblock-editor.paseo.order.v1'
 const emptyTree: PaseoTreeSnapshot = { available: true, projects: [], workspaces: [], orphanAgents: [] }
 
 type PaseoBridge = DesktopBridge & Required<Pick<DesktopBridge, 'readPaseoTree' | 'readPaseoLogs'>>

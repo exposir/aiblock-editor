@@ -1,8 +1,14 @@
+import {
+  isThemePresetId, parseThemePreset, themePresetBackground, themePresetVariableNames, themePresetVariables,
+} from './theme-presets.js'
+import type { ThemePresetId } from './theme-presets.js'
+
 export const themeModes = ['system', 'light', 'dark'] as const
 export type ThemeMode = typeof themeModes[number]
 export type ResolvedTheme = 'light' | 'dark'
 
 export const THEME_STORAGE_KEY = 'aiblock-editor.theme.v1'
+export const THEME_PRESET_STORAGE_KEY = 'aiblock-editor.theme-preset.v1'
 export const THEME_MEDIA_QUERY = '(prefers-color-scheme: dark)'
 export const THEME_REDUCED_MOTION_QUERY = '(prefers-reduced-motion: reduce)'
 export const themeLabels: Record<ThemeMode, string> = { system: '跟随系统', light: '浅色', dark: '深色' }
@@ -25,9 +31,18 @@ function transitionState(document: Document): ThemeTransitionState {
   return state
 }
 
-function applyResolvedTheme(document: Document, theme: ResolvedTheme) {
-  document.documentElement.dataset.theme = theme
-  document.documentElement.style.colorScheme = theme
+function applyAppearance(document: Document, theme: ResolvedTheme, preset: ThemePresetId) {
+  const root = document.documentElement
+  root.dataset.theme = theme
+  root.dataset.themePreset = preset
+  root.style.colorScheme = theme
+  for (const name of themePresetVariableNames) root.style.removeProperty(name)
+  const variables = themePresetVariables(preset, theme)
+  for (const name of themePresetVariableNames) {
+    const value = variables[name]
+    if (value) root.style.setProperty(name, value)
+  }
+  root.style.removeProperty('background-color')
 }
 
 function interruptThemeTransition(host: Window, state: ThemeTransitionState) {
@@ -66,16 +81,18 @@ function clearTransitionAfterPaint(host: Window, state: ThemeTransitionState, se
   }
 }
 
-function commitResolvedTheme(host: Window, theme: ResolvedTheme, allowTransition: boolean) {
+function commitAppearance(host: Window, theme: ResolvedTheme, preset: ThemePresetId, allowTransition: boolean) {
   const document = host.document
   const root = document.documentElement
-  const previous = root.dataset.theme
+  const previousTheme = root.dataset.theme
+  const previousPreset = isThemePresetId(root.dataset.themePreset) ? root.dataset.themePreset : null
   const state = transitionState(document)
   const interrupted = interruptThemeTransition(host, state)
   const sequence = state.sequence
-  const changed = (previous === 'light' || previous === 'dark') && previous !== theme
+  const changed = (previousTheme === 'light' || previousTheme === 'dark') &&
+    (previousTheme !== theme || previousPreset !== preset)
   if (!changed) {
-    applyResolvedTheme(document, theme)
+    applyAppearance(document, theme, preset)
     return
   }
 
@@ -85,7 +102,7 @@ function commitResolvedTheme(host: Window, theme: ResolvedTheme, allowTransition
       const transition = document.startViewTransition(() => {
         if (state.sequence !== sequence) return
         root.dataset.themeTransitioning = 'true'
-        applyResolvedTheme(document, theme)
+        applyAppearance(document, theme, preset)
       })
       state.active = transition
       void transition.finished.catch(() => undefined).finally(() => {
@@ -100,7 +117,7 @@ function commitResolvedTheme(host: Window, theme: ResolvedTheme, allowTransition
   }
 
   root.dataset.themeTransitioning = 'true'
-  applyResolvedTheme(document, theme)
+  applyAppearance(document, theme, preset)
   clearTransitionAfterPaint(host, state, sequence)
 }
 
@@ -128,14 +145,32 @@ export function readThemeMode(host: Window): ThemeMode {
   }
 }
 
-export function syncTheme(host: Window, mode: ThemeMode): () => void {
+export function readThemePreset(host: Window): ThemePresetId {
+  try {
+    return parseThemePreset(host.desktop?.initialThemePreset ?? host.localStorage.getItem(THEME_PRESET_STORAGE_KEY))
+  } catch {
+    return 'paper'
+  }
+}
+
+export function syncAppearance(host: Window, mode: ThemeMode, preset: ThemePresetId): () => void {
   const media = host.matchMedia(THEME_MEDIA_QUERY)
-  const apply = () => commitResolvedTheme(host, resolveTheme(mode, media.matches), true)
+  const apply = () => commitAppearance(host, resolveTheme(mode, media.matches), preset, true)
 
   apply()
   try { host.localStorage.setItem(THEME_STORAGE_KEY, mode) } catch { /* The current tab can still change appearance. */ }
+  try { host.localStorage.setItem(THEME_PRESET_STORAGE_KEY, preset) } catch { /* The current tab can still use the preset. */ }
   void host.desktop?.setTheme(mode).catch(error => console.error('Unable to set the native appearance', error))
+  void host.desktop?.setThemePreset?.(preset).catch(error => console.error('Unable to set the native theme preset', error))
 
   if (mode === 'system') media.addEventListener('change', apply)
   return () => { if (mode === 'system') media.removeEventListener('change', apply) }
+}
+
+export function syncTheme(host: Window, mode: ThemeMode): () => void {
+  return syncAppearance(host, mode, readThemePreset(host))
+}
+
+export function resolvedThemeBackground(preset: ThemePresetId, theme: ResolvedTheme): string {
+  return themePresetBackground(preset, theme)
 }

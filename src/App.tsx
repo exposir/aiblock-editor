@@ -13,8 +13,12 @@ import type { Appearance, DocumentSource } from './components/EditorControls'
 import { createEditorExtensions } from './editor/extensions'
 import { docToMarkdown } from './editor/markdown/markdown-codec'
 import { downloadBlob, isMarkdownFile } from './editor/markdown/markdown-files'
-import { isThemeMode, readThemeMode, syncTheme, THEME_MEDIA_QUERY, toggleResolvedTheme } from './theme/theme'
-import type { ThemeMode } from './theme/theme'
+import {
+  isThemeMode, readThemeMode, readThemePreset, resolveTheme, syncAppearance,
+  THEME_MEDIA_QUERY, toggleResolvedTheme,
+} from './theme/theme'
+import type { ResolvedTheme, ThemeMode } from './theme/theme'
+import { isThemePresetId } from './theme/theme-presets'
 import { PageEditor } from './workspace/PageEditor'
 import type { EditPage } from './workspace/PageEditor'
 import { PagePreview } from './workspace/PagePreview'
@@ -574,14 +578,32 @@ function WorkspaceApp({ persistence, appearance, documentMode, onDocumentModeCha
 export default function App() {
   const bridge = getDesktopBridge()
   const [themeMode, setThemeMode] = useState(() => readThemeMode(window))
+  const [themePreset, setThemePreset] = useState(() => readThemePreset(window))
+  const [resolvedTheme, setResolvedTheme] = useState<ResolvedTheme>(() =>
+    document.documentElement.dataset.theme === 'dark' ? 'dark' : 'light')
   const [documentMode, setDocumentMode] = useState(() => readDocumentMode(window))
-  useLayoutEffect(() => syncTheme(window, themeMode), [themeMode])
+  useLayoutEffect(() => {
+    const stop = syncAppearance(window, themeMode, themePreset)
+    const media = window.matchMedia(THEME_MEDIA_QUERY)
+    const update = () => setResolvedTheme(resolveTheme(themeMode, media.matches))
+    update()
+    media.addEventListener('change', update)
+    return () => {
+      stop()
+      media.removeEventListener('change', update)
+    }
+  }, [themeMode, themePreset])
   useEffect(() => {
     try { localStorage.setItem(DOCUMENT_MODE_STORAGE_KEY, documentMode) } catch { /* Mode still applies to this tab. */ }
   }, [documentMode])
   useEffect(() => bridge?.onMenuCommand(command => {
     if (command === 'toggle-theme') {
       setThemeMode(current => toggleResolvedTheme(current, window.matchMedia(THEME_MEDIA_QUERY).matches))
+      return
+    }
+    if (command.startsWith('theme-preset-')) {
+      const selection = command.slice('theme-preset-'.length)
+      if (isThemePresetId(selection)) setThemePreset(selection)
       return
     }
     if (!command.startsWith('theme-')) return
@@ -600,7 +622,10 @@ export default function App() {
     return () => window.removeEventListener('keydown', shortcut)
   }, [bridge])
 
-  const appearance = { mode: themeMode, setMode: setThemeMode }
+  const appearance = {
+    mode: themeMode, setMode: setThemeMode,
+    preset: themePreset, setPreset: setThemePreset, resolvedTheme,
+  }
   return <WorkspaceApp persistence={bridge} appearance={appearance} documentMode={documentMode}
     onDocumentModeChange={setDocumentMode} />
 }

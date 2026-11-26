@@ -2,14 +2,18 @@ import { contextBridge, ipcRenderer } from 'electron'
 import { desktopChannels as channels, menuCommands } from '../src/desktop/bridge.js'
 import type { DesktopBridge, DesktopMenuCommand } from '../src/desktop/bridge.js'
 import { isThemeMode } from '../src/theme/theme.js'
+import { isThemePresetId } from '../src/theme/theme-presets.js'
 import { validateImageInput } from '../src/workspace/asset-format.js'
 import { isWorkspaceExternalChange } from '../src/workspace/workspace-format.js'
 
 const initialTheme: unknown = ipcRenderer.sendSync(channels.initialTheme)
+const initialThemePreset: unknown = ipcRenderer.sendSync(channels.initialThemePreset)
 const desktop: DesktopBridge = {
   platform: process.platform as DesktopBridge['platform'],
   initialTheme: isThemeMode(initialTheme) ? initialTheme : undefined,
+  initialThemePreset: isThemePresetId(initialThemePreset) ? initialThemePreset : undefined,
   setTheme: mode => ipcRenderer.invoke(channels.setTheme, mode),
+  setThemePreset: preset => ipcRenderer.invoke(channels.setThemePreset, preset),
   readIndex: () => ipcRenderer.invoke(channels.readIndex),
   readPage: id => ipcRenderer.invoke(channels.readPage, id),
   peekPage: id => ipcRenderer.invoke(channels.peekPage, id),

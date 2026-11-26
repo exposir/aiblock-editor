@@ -7,6 +7,7 @@ import type { DesktopBridge } from './desktop/bridge'
 import { DEMO_HANDBOOK_ID, createDemoWorkspace } from './workspace/demo-workspace'
 import { WORKSPACE_STORAGE_KEY } from './workspace/page-store'
 import { DOCUMENT_MODE_STORAGE_KEY } from './workspace/document-mode'
+import { THEME_PRESET_STORAGE_KEY } from './theme/theme'
 import { splitLegacyWorkspace } from './workspace/workspace-format'
 import type { PageShard, WorkspaceExternalChange } from './workspace/workspace-format'
 import { createEditorExtensions } from './editor/extensions'
@@ -214,6 +215,12 @@ describe('App 多页面集成', () => {
     expect(screen.queryByRole('button', { name: '重置示例工作区' })).not.toBeInTheDocument()
     expect(screen.queryByRole('button', { name: '新建顶层页面' })).not.toBeInTheDocument()
 
+    await user.click(screen.getByRole('button', { name: '配色主题' }))
+    const presetPanel = await screen.findByRole('dialog', { name: '配色主题' })
+    await user.click(within(presetPanel).getByRole('button', { name: 'Space AI Space AI' }))
+    expect(document.documentElement).toHaveAttribute('data-theme-preset', 'space-ai')
+    expect(document.documentElement.style.getPropertyValue('--bg-workspace')).toBe('#F2F4FC')
+
     expect(screen.queryByText('思考与工具调用（1 项）')).not.toBeInTheDocument()
     await user.click(screen.getByRole('button', { name: '显示细节' }))
     expect(screen.getByText('思考与工具调用（1 项）')).toBeInTheDocument()
@@ -382,6 +389,41 @@ describe('App 多页面集成', () => {
     await user.click(commentsToggle)
     expect(commentsToggle).toHaveAttribute('aria-expanded', 'false')
     expect(screen.queryByRole('complementary', { name: '评论' })).not.toBeInTheDocument()
+  })
+
+  it('theme preset: opens the palette, filters categories, and switches named brands across modes', async () => {
+    const user = await mountApp()
+    await user.click(screen.getByRole('button', { name: '配色主题' }))
+    let panel = await screen.findByRole('dialog', { name: '配色主题' })
+    expect(within(panel).getAllByRole('button', { name: /Warm Paper|Notion|Lark|Bear/ })).toHaveLength(4)
+    await user.click(within(panel).getByRole('button', { name: '品牌' }))
+    expect(within(panel).queryByRole('button', { name: /Notion/ })).not.toBeInTheDocument()
+    expect(within(panel).getAllByRole('button', { name: /GitHub|Twitter|GoPro|Space AI|Linear|Obsidian/ }))
+      .toHaveLength(6)
+    await user.click(within(panel).getByRole('button', { name: '关闭配色主题' }))
+
+    const cases = [
+      ['Notion 文档 Notion', 'notion', '#F7F7F5', '#191919'],
+      ['GitHub GitHub', 'github', '#F6F8FA', '#0D1117'],
+      ['GoPro GoPro', 'gopro', '#F1F5F9', '#0B0F14'],
+      ['Space AI Space AI', 'space-ai', '#F2F4FC', '#070B14'],
+      ['Twitter / X Twitter / X', 'twitter', '#F7F9F9', '#000000'],
+    ] as const
+    for (const [name, preset, light, dark] of cases) {
+      await user.click(screen.getByRole('button', { name: '配色主题' }))
+      panel = await screen.findByRole('dialog', { name: '配色主题' })
+      await user.click(within(panel).getByRole('button', { name: '全部' }))
+      await user.click(within(panel).getByRole('button', { name }))
+      expect(document.documentElement).toHaveAttribute('data-theme-preset', preset)
+      expect(localStorage.getItem(THEME_PRESET_STORAGE_KEY)).toBe(preset)
+      expect(document.documentElement.style.getPropertyValue('--bg-workspace')).toBe(light)
+
+      const themeGroup = screen.getByRole('radiogroup', { name: '外观主题' })
+      await user.click(within(themeGroup).getByRole('radio', { name: '深色' }))
+      expect(document.documentElement.style.getPropertyValue('--bg-workspace')).toBe(dark)
+      await user.click(within(themeGroup).getByRole('radio', { name: '浅色' }))
+      expect(document.documentElement.style.getPropertyValue('--bg-workspace')).toBe(light)
+    }
   })
 
   it('shell: 父页面包屑跳转；子页编辑标题并双向同步页面树', async () => {

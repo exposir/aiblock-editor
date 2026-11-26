@@ -1,4 +1,6 @@
 import { themeModes } from '../theme/theme.js'
+import { themePresetIds } from '../theme/theme-presets.js'
+import type { ThemePresetId } from '../theme/theme-presets.js'
 import type { PaseoAgentLogs, PaseoLogsOptions, PaseoTreeSnapshot } from '../paseo/paseo-types.js'
 import type { ImageAssetInput, ImageAssetMetadata } from '../workspace/asset-format.js'
 import type { WorkspaceExternalChange, WorkspacePersistence } from '../workspace/workspace-format.js'
@@ -23,6 +25,7 @@ export const menuCommands = [
   'toggle-pages', 'toggle-outline', 'toggle-comments',
   'toggle-theme', 'toggle-mode',
   ...themeModes.map(mode => `theme-${mode}` as const),
+  ...themePresetIds.map(preset => `theme-preset-${preset}` as const),
 ] as const
 
 export type DesktopMenuCommand = typeof menuCommands[number]
@@ -39,7 +42,9 @@ export const desktopChannels = {
   saveFile: 'file:save',
   menuCommand: 'menu:command',
   initialTheme: 'theme:initial',
+  initialThemePreset: 'theme-preset:initial',
   setTheme: 'theme:set',
+  setThemePreset: 'theme-preset:set',
   flushWorkspace: 'workspace:flush',
   workspaceFlushed: 'workspace:flushed',
   externalChange: 'workspace:external-change',
@@ -51,7 +56,9 @@ export const desktopChannels = {
 export interface DesktopBridge extends WorkspacePersistence {
   readonly platform: DesktopPlatform
   readonly initialTheme?: ThemeMode
+  readonly initialThemePreset?: ThemePresetId
   setTheme(mode: ThemeMode): Promise<void>
+  setThemePreset?(preset: ThemePresetId): Promise<void>
   saveImageAsset(input: ImageAssetInput): Promise<ImageAssetMetadata>
   readImageAssets(ids: string[]): Promise<(ImageAssetMetadata | null)[]>
   openMarkdownFile(): Promise<MarkdownFile | null>

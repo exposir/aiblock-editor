@@ -34,7 +34,9 @@ function nativeProfile(initial: string | null = null) {
   let commitOptions: WorkspaceCommitOptions | undefined
   const bridge = {
     platform: 'darwin',
+    initialThemePreset: 'paper',
     setTheme: vi.fn<DesktopBridge['setTheme']>().mockResolvedValue(undefined),
+    setThemePreset: vi.fn<NonNullable<DesktopBridge['setThemePreset']>>().mockResolvedValue(undefined),
     readIndex: vi.fn(async () => index),
     readPage: vi.fn(async (id: string) => pages.get(id) ?? null),
     commit: vi.fn(async (changes: WorkspaceCommit, options?: WorkspaceCommitOptions) => {
@@ -374,6 +376,11 @@ describe('desktop workspace in App', () => {
     native.command('theme-light')
     expect(document.documentElement).toHaveAttribute('data-theme', 'light')
     expect(document.documentElement.style.colorScheme).toBe('light')
+
+    native.command('theme-preset-notion')
+    expect(document.documentElement).toHaveAttribute('data-theme-preset', 'notion')
+    expect(native.bridge.setThemePreset).toHaveBeenLastCalledWith('notion')
+    expect(document.documentElement.style.getPropertyValue('--bg-workspace')).toBe('#F7F7F5')
 
     fireEvent.keyDown(window, { key: 'd', metaKey: true, shiftKey: true })
     expect(document.documentElement).toHaveAttribute('data-theme', 'light')
