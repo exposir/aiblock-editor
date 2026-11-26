@@ -5,8 +5,9 @@ import { WorkspaceConflictError, WorkspaceLockedError } from '../workspace/works
 import { allowedFlags, parseArguments, required } from './args'
 import { CliError, conflictError, usageError } from './errors'
 import {
-  addImageAsset, appendPage, collectGarbage, createPage, deletePage, getPage, listPages, openCliWorkspace,
-  readMarkdownInput, renamePage, resolveWorkspacePath, searchPages, updatePage,
+  addImageAsset, appendPage, collectGarbage, commentsPage, createPage, deletePage, getPage, isPageReference,
+  listPages, movePageCli, openCliWorkspace, outlinePage, patchPage, readMarkdownInput, renamePage, replyToComment,
+  resolveWorkspacePath, restorePage, searchPages, trashList, updatePage,
 } from './workspace'
 
 export interface CliIO {
@@ -20,13 +21,20 @@ const helpText = `aiblock-doc — 操作本地 aiblock-editor 桌面工作区
 
 用法:
   aiblock-doc list
-  aiblock-doc get <page-id> [--format markdown|json]
+  aiblock-doc get <page-id|@active> [--format markdown|json] [--block <block-id> | --section <heading-block-id>] [--with-block-ids]
+  aiblock-doc outline <page-id|@active> [--blocks]
   aiblock-doc search <query> [--limit <n>]
   aiblock-doc create --title <title> [--parent <page-id>] [--icon <emoji>] [--markdown -|<file>] [--activate]
-  aiblock-doc append <page-id> --if-match <etag> [--markdown -|<file>]
-  aiblock-doc update <page-id> --if-match <etag> [--markdown -|<file>]
-  aiblock-doc rename <page-id> --title <title> --if-match <index-etag>
-  aiblock-doc delete <page-id> --if-match <index-etag>
+  aiblock-doc append <page-id|@active> --if-match <etag> [--markdown -|<file>]
+  aiblock-doc update <page-id|@active> --if-match <etag> [--markdown -|<file>]
+  aiblock-doc patch <page-id|@active> --if-match <etag> (--replace-block <id> | --insert-before <id> | --insert-after <id> | --delete-block <id> | --replace-section <id>) [--markdown -|<file>]
+  aiblock-doc rename <page-id|@active> --title <title> --if-match <index-etag>
+  aiblock-doc move <page-id|@active> --parent <parent-id|root> --if-match <index-etag>
+  aiblock-doc delete <page-id|@active> --if-match <index-etag> [--permanent]
+  aiblock-doc trash-list
+  aiblock-doc restore <page-id> --if-match <index-etag>
+  aiblock-doc comments <page-id|@active> [--unresolved]
+  aiblock-doc comment-reply <page-id|@active> <thread-id> --text <text> [--author <name>] [--resolve] --if-match <index-etag>
   aiblock-doc add-image <file>
   aiblock-doc gc [--grace-ms <n>]
 
@@ -34,6 +42,7 @@ const helpText = `aiblock-doc — 操作本地 aiblock-editor 桌面工作区
   --workspace <dir>   工作区目录（含 index.json）；默认 Electron userData/workspace
   --dry-run           只校验和预览写入，不落盘
   --help, -h          显示本帮助
+  @active             使用 index.json 中的当前活动页
 
 输出:
   成功: stdout 输出 {"ok":true,"data":...}
@@ -42,11 +51,13 @@ const helpText = `aiblock-doc — 操作本地 aiblock-editor 桌面工作区
 
 示例:
   AIBLOCK_WORKSPACE=~/Library/Application\\ Support/aiblock-editor/workspace aiblock-doc list
+  aiblock-doc outline @active --blocks
+  aiblock-doc get @active --section <heading-block-id> --with-block-ids
+  aiblock-doc patch @active --if-match <etag> --replace-block <block-id> --markdown - --dry-run
   aiblock-doc search '发布计划' --limit 5
-  aiblock-doc get 430e9296-6acb-4b74-84c3-a4bd05a20701
   printf '# 会议记录\\n\\n- 结论\\n' | aiblock-doc create --title '会议记录' --markdown - --activate
-  aiblock-doc append <page-id> --if-match <etag> --markdown notes.md
-  aiblock-doc update <page-id> --if-match <etag> --markdown rewritten.md --dry-run
+  aiblock-doc comments @active --unresolved
+  aiblock-doc comment-reply @active <thread-id> --text '已处理，请复核。' --resolve --if-match <index-etag>
   aiblock-doc add-image screenshot.png
   aiblock-doc gc --grace-ms 0 --dry-run
 `
@@ -80,8 +91,29 @@ async function stdinText(io: CliIO) {
 function onePage(args: ReturnType<typeof parseArguments>) {
   if (args.positionals.length !== 1) throw usageError('需要一个页面 ID。')
   const id = args.positionals[0]!
-  if (!isPageId(id)) throw usageError(`页面 ID 无效：${id}`)
+  if (!isPageReference(id)) throw usageError(`页面 ID 无效：${id}`)
   return id
+}
+
+function pageAndThread(args: ReturnType<typeof parseArguments>) {
+  if (args.positionals.length !== 2) throw usageError('需要页面 ID 和评论线程 ID。')
+  const pageId = args.positionals[0]!
+  if (!isPageReference(pageId)) throw usageError(`页面 ID 无效：${pageId}`)
+  const threadId = args.positionals[1]!.trim()
+  if (!threadId) throw usageError('评论线程 ID 不能为空。')
+  return { pageId, threadId }
+}
+
+function patchTarget(args: ReturnType<typeof parseArguments>) {
+  const operations = ['replace-block', 'insert-before', 'insert-after', 'delete-block', 'replace-section'] as const
+  const selected = operations.flatMap(operation => {
+    const value = args.values.get(operation)
+    return value === undefined ? [] : [{ operation, value }]
+  })
+  if (selected.length !== 1) throw usageError('patch 需要且只能指定一种块操作。')
+  const { operation, value } = selected[0]!
+  if (!value.trim()) throw usageError(`--${operation} 需要一个块 ID。`)
+  return { operation, targetBlockId: value }
 }
 
 function noPages(args: ReturnType<typeof parseArguments>) {
@@ -147,7 +179,23 @@ export async function runCli(argv: readonly string[], io: CliIO = defaultIO()): 
         const id = onePage(args)
         const format = args.values.get('format') ?? 'markdown'
         if (format !== 'markdown' && format !== 'json') throw usageError('--format 仅支持 markdown 或 json。')
-        writeSuccess(io, await getPage(workspace(['format']), id, format))
+        const blockId = args.values.get('block')
+        const sectionBlockId = args.values.get('section')
+        if (blockId !== undefined && sectionBlockId !== undefined) throw usageError('--block 与 --section 互斥。')
+        if (blockId !== undefined && !blockId.trim()) throw usageError('--block 需要一个块 ID。')
+        if (sectionBlockId !== undefined && !sectionBlockId.trim()) throw usageError('--section 需要一个标题块 ID。')
+        const withBlockIds = args.flags.has('with-block-ids')
+        if (withBlockIds && format !== 'markdown') throw usageError('--with-block-ids 仅支持 markdown 格式。')
+        writeSuccess(io, await getPage(
+          workspace(['format', 'block', 'section'], withBlockIds ? ['with-block-ids'] : []),
+          id, format, { blockId, sectionBlockId, withBlockIds },
+        ))
+        return 0
+      }
+      case 'outline': {
+        const id = onePage(args)
+        const blocks = args.flags.has('blocks')
+        writeSuccess(io, await outlinePage(workspace([], blocks ? ['blocks'] : []), id, blocks))
         return 0
       }
       case 'search': {
@@ -211,6 +259,30 @@ export async function runCli(argv: readonly string[], io: CliIO = defaultIO()): 
         }))
         return 0
       }
+      case 'patch': {
+        const id = onePage(args)
+        const ifMatch = required(args, 'if-match')
+        const { operation, targetBlockId } = patchTarget(args)
+        if (operation === 'delete-block' && args.values.has('markdown')) {
+          throw usageError('--delete-block 不接受 --markdown。')
+        }
+        const files = workspace(
+          operation === 'delete-block' ? ['if-match', operation] : ['if-match', 'markdown', operation],
+        )
+        const markdown = operation === 'delete-block' ? '' : await readMarkdownInput(args.values.get('markdown'), {
+          required: true,
+          readStdin: () => stdinText(io),
+          cwd: io.cwd ?? process.cwd(),
+        })
+        writeSuccess(io, await patchPage(files, id, {
+          ifMatch,
+          operation,
+          targetBlockId,
+          markdown: markdown ?? '',
+          dryRun: args.flags.has('dry-run'),
+        }))
+        return 0
+      }
       case 'rename': {
         const id = onePage(args)
         const title = required(args, 'title')
@@ -222,10 +294,56 @@ export async function runCli(argv: readonly string[], io: CliIO = defaultIO()): 
         }))
         return 0
       }
+      case 'move': {
+        const id = onePage(args)
+        const parent = required(args, 'parent')
+        const ifMatch = required(args, 'if-match')
+        if (parent !== 'root' && !isPageId(parent)) throw usageError(`父页面 ID 无效：${parent}`)
+        writeSuccess(io, await movePageCli(workspace(['parent', 'if-match']), id, {
+          parent,
+          ifMatch,
+          dryRun: args.flags.has('dry-run'),
+        }))
+        return 0
+      }
+      case 'comments': {
+        const id = onePage(args)
+        const unresolved = args.flags.has('unresolved')
+        writeSuccess(io, await commentsPage(workspace([], unresolved ? ['unresolved'] : []), id, unresolved))
+        return 0
+      }
+      case 'comment-reply': {
+        const { pageId, threadId } = pageAndThread(args)
+        const text = required(args, 'text')
+        const ifMatch = required(args, 'if-match')
+        const resolve = args.flags.has('resolve')
+        writeSuccess(io, await replyToComment(
+          workspace(['text', 'author', 'if-match'], resolve ? ['resolve'] : []),
+          pageId, threadId,
+          { text, author: args.values.get('author'), resolve, ifMatch, dryRun: args.flags.has('dry-run') },
+        ))
+        return 0
+      }
       case 'delete': {
         const id = onePage(args)
         const ifMatch = required(args, 'if-match')
-        writeSuccess(io, await deletePage(workspace(['if-match']), id, {
+        const permanent = args.flags.has('permanent')
+        writeSuccess(io, await deletePage(workspace(['if-match'], permanent ? ['permanent'] : []), id, {
+          ifMatch,
+          dryRun: args.flags.has('dry-run'),
+          permanent,
+        }))
+        return 0
+      }
+      case 'trash-list': {
+        noPages(args)
+        writeSuccess(io, await trashList(workspace()))
+        return 0
+      }
+      case 'restore': {
+        const id = onePage(args)
+        const ifMatch = required(args, 'if-match')
+        writeSuccess(io, await restorePage(workspace(['if-match']), id, {
           ifMatch,
           dryRun: args.flags.has('dry-run'),
         }))

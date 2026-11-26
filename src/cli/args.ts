@@ -8,8 +8,14 @@ export interface CliArguments {
   readonly help: boolean
 }
 
-const valueFlags = new Set(['workspace', 'title', 'parent', 'icon', 'markdown', 'if-match', 'format', 'limit', 'grace-ms'])
-const booleanFlags = new Set(['help', 'dry-run', 'activate'])
+const valueFlags = new Set([
+  'workspace', 'title', 'parent', 'icon', 'markdown', 'if-match', 'format', 'limit', 'grace-ms',
+  'block', 'section', 'replace-block', 'insert-before', 'insert-after', 'delete-block', 'replace-section',
+  'text', 'author',
+])
+const booleanFlags = new Set([
+  'help', 'dry-run', 'activate', 'unresolved', 'resolve', 'permanent', 'blocks', 'with-block-ids',
+])
 
 export function parseArguments(argv: readonly string[]): CliArguments {
   const positionals: string[] = []

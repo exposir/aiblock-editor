@@ -2,6 +2,7 @@ import { mkdtemp, open, readFile, readdir, rm, stat, writeFile, mkdir } from 'no
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
+import type { CommentThread } from '../editor/comments'
 import { testImage } from '../test/image-fixture'
 import { openWorkspaceFiles } from '../workspace/workspace-files'
 import { runCli } from './main'
@@ -213,6 +214,17 @@ async function moveToTrash(directory: string, id: string) {
   })
 }
 
+async function seedComments(directory: string, id: string, comments: readonly CommentThread[]) {
+  const files = openWorkspaceFiles(directory)
+  await files.mutate(async transaction => {
+    const index = (await transaction.readIndex())!
+    await transaction.write({
+      index: { ...index, pages: index.pages.map(page => page.id === id ? { ...page, comments } : page) },
+      pages: [], removedPageIds: [],
+    })
+  })
+}
+
 async function writeImage(directory: string, name: string, variant = 0) {
   const file = join(directory, name)
   const { bytes } = testImage()
@@ -392,9 +404,271 @@ describe('CLI assets and trash compatibility', () => {
     const newPage = await create(directory, '新增')
     const appended = (await cli(directory, ['append', newPage.page.id, '--if-match', newPage.etag], '追加')).json().data
     const renamed = (await cli(directory, ['rename', newPage.page.id, '--title', '改名', '--if-match', appended.indexEtag])).json().data
-    expect((await cli(directory, ['delete', newPage.page.id, '--if-match', renamed.indexEtag])).json().data.removedPageIds)
+    expect((await cli(directory, ['delete', newPage.page.id, '--if-match', renamed.indexEtag, '--permanent'])).json().data.removedPageIds)
       .toEqual([newPage.page.id])
     expect(JSON.parse(await readFile(indexPath, 'utf8')).trash).toEqual(original)
     await expect(readFile(shardPath, 'utf8')).resolves.toBe(originalShard)
+  })
+})
+
+describe('CLI progressive reading and @active', () => {
+  // @partition outline: heading indexes, block summaries and legacy get output
+  // @partition slices: single block, section, block comments and invalid targets
+  // @partition active: read/write commands and uninitialized workspace
+  it('outline and block or section slices expose stable block IDs without changing legacy get', async () => {
+    const directory = await tempWorkspace()
+    const page = await create(directory, '渐进页', '# 总览\n\n第一段\n\n## 小节\n\n第二段\n\n### 子节\n\n第三段\n\n## 下一节\n\n第四段\n')
+    const legacy = (await cli(directory, ['get', page.page.id])).json().data
+    expect(legacy.format).toBe('markdown')
+    expect(legacy.content).not.toContain('<!-- block:')
+
+    const outline = (await cli(directory, ['outline', '@active', '--blocks'])).json().data
+    expect(outline.page.id).toBe(page.page.id)
+    expect(outline.blockCount).toBe(8)
+    expect(outline.outline.map((entry: { text: string }) => entry.text)).toEqual(['总览', '小节', '子节', '下一节'])
+    expect(outline.blocks).toHaveLength(8)
+    expect(outline.blocks[0]).toMatchObject({ type: 'heading', preview: '总览' })
+
+    const sectionEntry = outline.outline.find((entry: { text: string }) => entry.text === '小节')
+    const section = (await cli(directory, ['get', '@active', '--section', sectionEntry.blockId, '--with-block-ids'])).json().data
+    expect(section.content).toContain(`<!-- block:${sectionEntry.blockId} -->`)
+    expect(section.content).toContain('第二段')
+    expect(section.content).toContain('第三段')
+    expect(section.content).not.toContain('第四段')
+
+    const paragraph = outline.blocks.find((block: { type: string; preview: string }) => block.type === 'paragraph' && block.preview === '第二段')
+    expect((await cli(directory, ['get', '@active', '--block', paragraph.blockId])).json().data.content).toBe('第二段\n')
+    expect((await cli(directory, ['get', '@active', '--format', 'json', '--block', paragraph.blockId])).json().data.content.content)
+      .toHaveLength(1)
+
+    expect((await cli(directory, ['get', '@active', '--block', paragraph.blockId, '--section', sectionEntry.blockId])).code).toBe(2)
+    expect((await cli(directory, ['get', '@active', '--format', 'json', '--block', paragraph.blockId, '--with-block-ids'])).code).toBe(2)
+    expect((await cli(directory, ['get', '@active', '--block', 'missing-block'])).code).toBe(3)
+    expect((await cli(directory, ['get', '@active', '--section', paragraph.blockId])).code).toBe(5)
+  })
+
+  it('@active resolves reads and writes and returns 3 for an uninitialized workspace', async () => {
+    const empty = await tempWorkspace()
+    expect((await cli(empty, ['get', '@active'])).code).toBe(3)
+    expect((await cli(empty, ['comments', '@active'])).code).toBe(3)
+
+    const directory = await tempWorkspace()
+    const page = await create(directory, '活动页', '# 活动\n\n正文\n')
+    expect((await cli(directory, ['get', '@active'])).json().data.page.id).toBe(page.page.id)
+
+    const appended = await cli(directory, ['append', '@active', '--if-match', page.etag, '--markdown', '-'], '追加')
+    expect(appended.code).toBe(0)
+    const afterAppend = (await cli(directory, ['get', '@active', '--format', 'json'])).json().data
+    const updated = await cli(directory, ['update', '@active', '--if-match', afterAppend.etag, '--markdown', '-'], '# 新标题\n\n新正文\n')
+    expect(updated.code).toBe(0)
+    const renamed = await cli(directory, ['rename', '@active', '--title', '改名', '--if-match', updated.json().data.indexEtag])
+    expect(renamed.code).toBe(0)
+    expect((await cli(directory, ['outline', '@active'])).code).toBe(0)
+    expect((await cli(directory, ['comments', '@active'])).code).toBe(0)
+
+    const moved = await cli(directory, ['move', '@active', '--parent', 'root', '--if-match', renamed.json().data.indexEtag])
+    expect(moved.code).toBe(0)
+    expect(moved.json().data.parentId).toBeNull()
+
+    const doc = (await cli(directory, ['get', '@active', '--format', 'json'])).json().data
+    const target = doc.content.content.find((node: { type: string }) => node.type === 'paragraph')
+    expect((await cli(directory, ['patch', '@active', '--if-match', doc.etag, '--replace-block', target.attrs.blockId, '--markdown', '-'], '替换段')).code).toBe(0)
+
+    const beforeDelete = (await cli(directory, ['list'])).json().data
+    const deleted = await cli(directory, ['delete', '@active', '--if-match', beforeDelete.indexEtag])
+    expect(deleted.code).toBe(0)
+    expect(deleted.json().data).toMatchObject({ trashed: true, removedPageIds: [page.page.id] })
+  })
+})
+
+describe('CLI block patch and comment collaboration', () => {
+  // @partition patch: preview, replacement, section, deletion, stale etag and invalid targets
+  // @partition preserve: untouched block IDs, comments and rich Markdown behavior
+  // @partition comments: unresolved filter, AI reply, resolve, dry-run and conflicts
+  it('patches blocks and sections while preserving untouched block IDs and comments', async () => {
+    const directory = await tempWorkspace()
+    const page = await create(directory, '补丁页', '# 总览\n\n第一段\n\n## 小节\n\n第二段\n\n## 下一节\n\n第三段\n')
+    await seedComments(directory, page.page.id, [
+      { id: 'thread-1', quote: '第一段', messages: [], resolved: false },
+    ])
+    const outline = (await cli(directory, ['outline', page.page.id, '--blocks'])).json().data
+    const first = outline.blocks.find((block: { preview: string }) => block.preview === '第一段')
+    const sectionEntry = outline.outline.find((entry: { text: string }) => entry.text === '小节')
+    const nextEntry = outline.outline.find((entry: { text: string }) => entry.text === '下一节')
+    const before = (await cli(directory, ['get', page.page.id, '--format', 'json'])).json().data
+    const headingId = before.content.content[0].attrs.blockId
+
+    const dry = await cli(directory, ['patch', page.page.id, '--if-match', before.etag, '--replace-block', first.blockId, '--markdown', '-', '--dry-run'], '替换第一段')
+    expect(dry.json().data).toEqual({
+      dryRun: true, pageId: page.page.id, operation: 'replace-block', targetBlockId: first.blockId,
+      etag: before.etag, indexEtag: before.indexEtag,
+    })
+    const patched = await cli(directory, ['patch', page.page.id, '--if-match', before.etag, '--replace-block', first.blockId, '--markdown', '-'], '替换第一段')
+    const after = (await cli(directory, ['get', page.page.id, '--format', 'json'])).json().data
+    expect(patched.json().data).toMatchObject({ pageId: page.page.id, operation: 'replace-block', targetBlockId: first.blockId })
+    expect(after.content.content[0].attrs.blockId).toBe(headingId)
+    expect(after.content.content[1].content[0].text).toBe('替换第一段')
+    expect(after.content.content[1].attrs.blockId).toBeTruthy()
+    expect(after.content.content[1].attrs.blockId).not.toBe(first.blockId)
+    expect((await cli(directory, ['comments', page.page.id])).json().data.comments).toHaveLength(1)
+
+    const section = await cli(directory, ['patch', page.page.id, '--if-match', after.etag, '--replace-section', sectionEntry.blockId, '--markdown', '-'], '## 替换小节\n\n新内容\n')
+    expect(section.code).toBe(0)
+    const sectionAfter = (await cli(directory, ['get', page.page.id, '--format', 'json'])).json().data
+    expect(sectionAfter.content.content.some((node: { attrs?: { blockId?: string } }) => node.attrs?.blockId === nextEntry.blockId)).toBe(true)
+    expect(JSON.stringify(sectionAfter.content)).toContain('替换小节')
+    expect(JSON.stringify(sectionAfter.content)).toContain('新内容')
+
+    const removable = sectionAfter.content.content.find((node: { content?: { text?: string }[] }) => node.content?.[0]?.text === '新内容')
+    const deleted = await cli(directory, ['patch', page.page.id, '--if-match', sectionAfter.etag, '--delete-block', removable.attrs.blockId])
+    expect(deleted.code).toBe(0)
+    const afterDelete = (await cli(directory, ['get', page.page.id, '--format', 'json'])).json().data
+    expect(JSON.stringify(afterDelete.content)).not.toContain(removable.attrs.blockId)
+
+    expect((await cli(directory, ['patch', page.page.id, '--if-match', afterDelete.etag, '--replace-block', 'missing', '--markdown', '-'], 'x')).code).toBe(3)
+    const paragraphId = afterDelete.content.content.find((node: { type: string }) => node.type === 'paragraph').attrs.blockId
+    expect((await cli(directory, ['patch', page.page.id, '--if-match', afterDelete.etag, '--replace-section', paragraphId, '--markdown', '-'], 'x')).code).toBe(5)
+    expect((await cli(directory, ['patch', page.page.id, '--if-match', afterDelete.etag, '--replace-block', paragraphId, '--delete-block', paragraphId])).code).toBe(2)
+    expect((await cli(directory, ['patch', page.page.id, '--if-match', afterDelete.etag, '--delete-block', paragraphId, '--markdown', '-'], 'x')).code).toBe(2)
+    expect((await cli(directory, ['patch', page.page.id, '--if-match', before.etag, '--replace-block', paragraphId, '--markdown', '-'], '过期')).code).toBe(4)
+  })
+
+  it('reads and replies to comment threads, resolves them and protects index etags', async () => {
+    const directory = await tempWorkspace()
+    const page = await create(directory, '评论页', '# 评论\n\n第一段\n\n第二段\n')
+    await seedComments(directory, page.page.id, [
+      { id: 'thread-1', quote: '第一段', messages: [{ id: 'message-1', author: '人', text: '请处理' }], resolved: false },
+      { id: 'thread-2', quote: '第二段', messages: [], resolved: true },
+    ])
+    const all = (await cli(directory, ['comments', '@active'])).json().data
+    expect(all.page.id).toBe(page.page.id)
+    expect(all.comments).toHaveLength(2)
+    expect((await cli(directory, ['comments', '@active', '--unresolved'])).json().data.comments.map((thread: { id: string }) => thread.id))
+      .toEqual(['thread-1'])
+
+    const dry = await cli(directory, ['comment-reply', '@active', 'thread-1', '--text', '已处理', '--if-match', all.indexEtag, '--dry-run'])
+    expect(dry.json().data).toMatchObject({ dryRun: true, threadId: 'thread-1', resolved: false, message: { author: 'AI', text: '已处理' } })
+    expect((await cli(directory, ['comments', '@active'])).json().data.indexEtag).toBe(all.indexEtag)
+
+    const reply = await cli(directory, ['comment-reply', '@active', 'thread-1', '--text', '已处理，请复核。', '--author', 'Agent', '--if-match', all.indexEtag])
+    expect(reply.json().data).toMatchObject({ pageId: page.page.id, threadId: 'thread-1', resolved: false, message: { author: 'Agent', text: '已处理，请复核。' } })
+    expect(reply.json().data.indexEtag).not.toBe(all.indexEtag)
+    expect((await cli(directory, ['comments', '@active', '--unresolved'])).json().data.comments).toHaveLength(1)
+
+    const resolved = await cli(directory, ['comment-reply', page.page.id, 'thread-1', '--text', '完成', '--resolve', '--if-match', reply.json().data.indexEtag])
+    expect(resolved.json().data.resolved).toBe(true)
+    expect((await cli(directory, ['comments', '@active', '--unresolved'])).json().data.comments).toEqual([])
+    const threads = (await cli(directory, ['comments', '@active'])).json().data.comments
+    expect(threads.find((thread: { id: string }) => thread.id === 'thread-1').messages).toHaveLength(3)
+
+    expect((await cli(directory, ['comment-reply', '@active', 'thread-1', '--text', 'x', '--if-match', all.indexEtag])).code).toBe(4)
+    expect((await cli(directory, ['comment-reply', '@active', 'missing-thread', '--text', 'x', '--if-match', resolved.json().data.indexEtag])).code).toBe(3)
+    expect((await cli(directory, ['comment-reply', '@active', 'thread-1', '--text', '', '--if-match', resolved.json().data.indexEtag])).code).toBe(2)
+    expect((await cli(directory, ['comment-reply', '@active', 'thread-1', '--text', '   ', '--if-match', resolved.json().data.indexEtag])).code).toBe(5)
+  })
+})
+
+describe('CLI page tree and recycle bin', () => {
+  // @partition move: parent, root, dry-run, cycles and missing parents
+  // @partition delete: soft trash, permanent purge, trash list and restore
+  // @partition restore: subtree, promoted root, fallback page and etag guards
+  it('moves pages to the end of a parent and rejects self or descendant cycles', async () => {
+    const directory = await tempWorkspace()
+    const a = await create(directory, 'A')
+    const b = await create(directory, 'B')
+    const c = (await cli(directory, ['create', '--title', 'C', '--parent', a.page.id])).json().data
+    const firstIndex = (await cli(directory, ['list'])).json().data.indexEtag
+    const moved = await cli(directory, ['move', b.page.id, '--parent', a.page.id, '--if-match', firstIndex])
+    expect(moved.code).toBe(0)
+    expect(moved.json().data).toMatchObject({ pageId: b.page.id, parentId: a.page.id, order: 1 })
+
+    const movedIndex = moved.json().data.indexEtag
+    expect((await cli(directory, ['move', a.page.id, '--parent', c.page.id, '--if-match', movedIndex])).code).toBe(5)
+    expect((await cli(directory, ['move', a.page.id, '--parent', a.page.id, '--if-match', movedIndex])).code).toBe(5)
+    expect((await cli(directory, ['move', b.page.id, '--parent', '33333333-3333-4333-8333-333333333333', '--if-match', movedIndex])).code).toBe(3)
+
+    const dry = await cli(directory, ['move', b.page.id, '--parent', 'root', '--if-match', movedIndex, '--dry-run'])
+    expect(dry.json().data).toMatchObject({ dryRun: true, parentId: null, order: 1 })
+    const stillNested = (await cli(directory, ['list'])).json().data.pages.find((page: { id: string }) => page.id === b.page.id)
+    expect(stillNested.parentId).toBe(a.page.id)
+
+    const activeMove = await cli(directory, ['move', '@active', '--parent', 'root', '--if-match', movedIndex])
+    expect(activeMove.code).toBe(0)
+    expect(activeMove.json().data).toMatchObject({ pageId: a.page.id, parentId: null })
+    expect((await cli(directory, ['move', b.page.id, '--parent', 'root', '--if-match', firstIndex])).code).toBe(4)
+  })
+
+  it('soft deletes into trash, restores subtrees and only purges shards with --permanent', async () => {
+    const directory = await tempWorkspace()
+    const parent = await create(directory, '父页')
+    const child = (await cli(directory, ['create', '--title', '子页', '--parent', parent.page.id])).json().data
+    const keep = (await cli(directory, ['create', '--title', '保留页', '--activate'])).json().data
+    const indexEtag = (await cli(directory, ['list'])).json().data.indexEtag
+
+    const deleted = await cli(directory, ['delete', parent.page.id, '--if-match', indexEtag])
+    expect(deleted.code).toBe(0)
+    expect(deleted.json().data).toMatchObject({ trashed: true, activePageId: keep.page.id })
+    expect(deleted.json().data.removedPageIds).toEqual(expect.arrayContaining([parent.page.id, child.page.id]))
+    expect((await cli(directory, ['list'])).json().data.pages.map((page: { id: string }) => page.id)).toEqual([keep.page.id])
+    expect((await cli(directory, ['get', parent.page.id])).code).toBe(3)
+    await expect(stat(join(directory, 'pages', parent.page.id + '.json'))).resolves.toBeDefined()
+    await expect(stat(join(directory, 'pages', child.page.id + '.json'))).resolves.toBeDefined()
+
+    const trash = (await cli(directory, ['trash-list'])).json().data
+    expect(trash.trash).toHaveLength(2)
+    expect(trash.trash.map((page: { id: string }) => page.id)).toEqual(expect.arrayContaining([parent.page.id, child.page.id]))
+    expect(trash.trash.every((page: { deletedAt: number }) => Number.isFinite(page.deletedAt))).toBe(true)
+    expect((await cli(directory, ['restore', '33333333-3333-4333-8333-333333333333', '--if-match', trash.indexEtag])).code).toBe(3)
+
+    const restored = await cli(directory, ['restore', parent.page.id, '--if-match', trash.indexEtag])
+    expect(restored.code).toBe(0)
+    expect(restored.json().data.restoredPageIds).toEqual(expect.arrayContaining([parent.page.id, child.page.id]))
+    expect(restored.json().data.page).toMatchObject({ id: parent.page.id, parentId: null })
+    expect((await cli(directory, ['trash-list'])).json().data.trash).toEqual([])
+    expect((await cli(directory, ['list'])).json().data.pages.map((page: { id: string }) => page.id))
+      .toEqual(expect.arrayContaining([parent.page.id, child.page.id, keep.page.id]))
+
+    const beforeDry = (await cli(directory, ['list'])).json().data.indexEtag
+    const dry = await cli(directory, ['delete', child.page.id, '--if-match', beforeDry, '--dry-run'])
+    expect(dry.json().data).toMatchObject({ dryRun: true, trashed: true, removedPageIds: [child.page.id] })
+    expect((await cli(directory, ['list'])).json().data.indexEtag).toBe(beforeDry)
+
+    const hardened = await cli(directory, ['delete', child.page.id, '--if-match', beforeDry, '--permanent'])
+    expect(hardened.json().data).toMatchObject({ trashed: false, removedPageIds: [child.page.id] })
+    await expect(stat(join(directory, 'pages', child.page.id + '.json'))).rejects.toMatchObject({ code: 'ENOENT' })
+    expect((await cli(directory, ['trash-list'])).json().data.trash).toEqual([])
+    expect((await cli(directory, ['delete', keep.page.id, '--if-match', trash.indexEtag])).code).toBe(4)
+  })
+
+  it('restores a child whose parent stays in trash as a root page', async () => {
+    const directory = await tempWorkspace()
+    const parent = await create(directory, '父页')
+    const child = (await cli(directory, ['create', '--title', '子页', '--parent', parent.page.id])).json().data
+    await create(directory, '保留页')
+    const indexEtag = (await cli(directory, ['list'])).json().data.indexEtag
+    await cli(directory, ['delete', parent.page.id, '--if-match', indexEtag])
+    const trash = (await cli(directory, ['trash-list'])).json().data
+    const restored = await cli(directory, ['restore', child.page.id, '--if-match', trash.indexEtag])
+    expect(restored.code).toBe(0)
+    expect(restored.json().data.restoredPageIds).toEqual([child.page.id])
+    expect(restored.json().data.page).toMatchObject({ id: child.page.id, parentId: null })
+    expect((await cli(directory, ['trash-list'])).json().data.trash.map((page: { id: string }) => page.id)).toEqual([parent.page.id])
+  })
+
+  it('soft deleting the last live page creates a blank fallback and keeps the old page restorable', async () => {
+    const directory = await tempWorkspace()
+    const page = await create(directory, '孤页')
+    const indexEtag = (await cli(directory, ['list'])).json().data.indexEtag
+    const deleted = await cli(directory, ['delete', page.page.id, '--if-match', indexEtag])
+    expect(deleted.json().data).toMatchObject({ trashed: true, removedPageIds: [page.page.id] })
+    const fallback = (await cli(directory, ['list'])).json().data
+    expect(fallback.pages).toHaveLength(1)
+    expect(fallback.pages[0].title).toBe('无标题文档')
+    expect(fallback.pages[0].id).not.toBe(page.page.id)
+    const trash = (await cli(directory, ['trash-list'])).json().data
+    const restored = await cli(directory, ['restore', page.page.id, '--if-match', trash.indexEtag])
+    expect(restored.json().data.restoredPageIds).toEqual([page.page.id])
+    expect((await cli(directory, ['list'])).json().data.pages.map((item: { id: string }) => item.id))
+      .toEqual(expect.arrayContaining([page.page.id, fallback.pages[0].id]))
   })
 })

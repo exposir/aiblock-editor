@@ -1,6 +1,6 @@
 # CLI 与 Agent Skill
 
-`aiblock-doc` 用于从终端搜索和读取本地桌面文档，写入或整页替换 Markdown，导入图片并清理未引用资产。配套 Skill 说明如何定位页面、使用正确的版本标签以及处理冲突。CLI 可以在桌面应用关闭时运行。桌面端打开同一工作区时，会感知外部写入。
+`aiblock-doc` 用于从终端搜索本地桌面文档，阅读大纲和局部小节，精准替换块或小节，读写划词评论，整理页面树，并通过回收站安全删除或恢复。也可以写入整页 Markdown、导入图片和清理未引用资产。配套 Skill 说明如何定位页面、使用正确的版本标签以及处理冲突。CLI 可以在桌面应用关闭时运行。桌面端打开同一工作区时，会感知外部写入。
 
 ## 安装 CLI
 
@@ -28,25 +28,58 @@ aiblock-doc --help
 aiblock-doc search '发布计划' --limit 5
 ```
 
+页面位置参数也可以写 `@active`，直接使用索引中的当前活动页，省去重复 `list` 查 UUID。
+
 再用 `list` 确认页面树，用 `get` 读取正文与标签。输出是一行 JSON，下例使用 `jq` 只读取标准输出中的字段。
 
 ```sh
 aiblock-doc list
-aiblock-doc get "$page_id"
-etag=$(aiblock-doc get "$page_id" | jq -er '.data.etag')
+aiblock-doc get @active
+etag=$(aiblock-doc get @active | jq -er '.data.etag')
 printf '## 决议\n\n上线前完成回归。\n' |
-  aiblock-doc append "$page_id" --if-match "$etag" --markdown -
+  aiblock-doc append @active --if-match "$etag" --markdown -
 ```
 
-`append` 只把 Markdown 加到页尾。需要整体重写时用 `update`，它同样使用页面 `etag`，并保留标题、图标、父页、同级顺序和创建时间：
+长文档先读结构，再按块或小节取局部 Markdown，避免整页内容消耗 token：
 
 ```sh
-aiblock-doc update "$page_id" --if-match "$etag" --markdown rewritten.md
+aiblock-doc outline @active --blocks
+aiblock-doc get @active --section "$heading_block_id" --with-block-ids
+printf '## 修订\n\n只替换这一节。\n' |
+  aiblock-doc patch @active --if-match "$etag" --replace-section "$heading_block_id" --markdown -
 ```
 
-`create --title <title> --markdown -` 从 stdin 新建页，可用 `--parent` 归入某个父页，或用 `--activate` 设为活动页。新增、追加、替换、改名、删除、图片导入和资产回收都支持 `--dry-run`。删除会带走所有后代，先检查预演的 `removedPageIds`。
+`patch` 还支持 `--replace-block`、`--insert-before`、`--insert-after` 和 `--delete-block`。未触及的块保留原 `blockId`、评论 Mark、图片宽高、表格列宽和代码视图模式。`append` 只把 Markdown 加到页尾；需要整体重写时用 `update`，它同样使用页面 `etag`，并保留页面元数据。
 
-图片先导入，再把返回的 `markdown` 交给 `create`、`update` 或 `append`。支持 PNG、JPEG、GIF 和 WebP，单张上限 32 MiB，按 SHA-256 去重。
+```sh
+aiblock-doc update @active --if-match "$etag" --markdown rewritten.md
+```
+
+`create --title <title> --markdown -` 从 stdin 新建页，可用 `--parent` 归入某个父页，或用 `--activate` 设为活动页。新增、追加、替换、`patch`、改名、移动、删除、评论回复、恢复、图片导入和资产回收都支持 `--dry-run`。
+
+## 评论协作
+
+评论线程保存在索引中。`comments` 读取全部线程，`--unresolved` 只看未解决项。`comment-reply` 追加一条消息，`--author` 默认 `AI`；加 `--resolve` 后线程立即标记为已解决。回复使用 `indexEtag`，桌面端会通过热同步看到新消息。
+
+```sh
+aiblock-doc comments @active --unresolved
+aiblock-doc comment-reply @active "$thread_id" --text '已处理，请复核。' --resolve --if-match "$index_etag"
+```
+
+## 页面树与回收站
+
+`move` 把页面移到目标父页末尾，`--parent root` 表示根级；移入自身或后代会被拒绝。`delete` 默认把目标和后代软删进回收站，正文分片和图片引用都保留。确认需要不可逆清理时才加 `--permanent`。
+
+```sh
+aiblock-doc move @active --parent root --if-match "$index_etag"
+aiblock-doc delete @active --if-match "$index_etag"
+aiblock-doc trash-list
+aiblock-doc restore "$trashed_page_id" --if-match "$index_etag"
+```
+
+`restore` 恢复目标及回收站中的后代。原父页不在活页时，目标页自动提根。恢复前用 `trash-list` 核对页面和 `deletedAt`。
+
+图片先导入，再把返回的 `markdown` 交给 `create`、`update`、`patch` 或 `append`。支持 PNG、JPEG、GIF 和 WebP，单张上限 32 MiB，按 SHA-256 去重。
 
 ```sh
 aiblock-doc add-image screenshot.png
@@ -56,7 +89,7 @@ aiblock-doc gc --dry-run
 
 `asset:` 引用只在同一工作区有效。未引用的图片可以用 `gc` 回收：默认保留 5 分钟内新写入的资产，`--grace-ms 0` 立即回收。`gc` 在锁内读取活页和回收站，任何分片缺失或损坏都会中止，且不删除资产。
 
-正文追加和替换使用 `get` 返回的页面 `etag`。改名和删除使用 `list` 或 `get` 返回的 `indexEtag`。返回退出码 4 时，根据操作重读正文或页面树，对照当前数据再决定是否重试。完整参数、输出和退出码见 [CLI 参考](../reference/cli-api)。
+追加、整页替换和局部 `patch` 使用 `get` 返回的页面 `etag`。改名、移动、默认软删、恢复和评论回复使用 `list` / `comments` 返回的 `indexEtag`。返回退出码 4 时，根据操作重读正文、目标块或页面树，对照当前数据再决定是否重试。完整参数、输出和退出码见 [CLI 参考](../reference/cli-api)。
 
 ## 安装 Skill
 

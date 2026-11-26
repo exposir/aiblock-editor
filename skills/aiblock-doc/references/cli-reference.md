@@ -9,17 +9,30 @@ CLI 操作本地 Electron v2 工作区。运行 `aiblock-doc --help` 查看当�
 | 命令 | 参数与默认行为 | 成功返回的 `data` |
 | --- | --- | --- |
 | `list` | 无位置参数。读取索引，返回存储顺序的平面列表，可用 `parentId` 和同级 `order` 组树。 | `activePageId`、`pages`、`indexEtag` |
-| `get <id>` | UUID。可选 `--format markdown\|json`，默认 `markdown`。 | `page`、`etag`、`indexEtag`、`format`、`content` |
+| `get <id\|@active>` | 可选 `--format markdown\|json`，默认 `markdown`；`--block <id>` 与 `--section <heading-id>` 互斥；`--with-block-ids` 仅用于 Markdown。 | `page`、`etag`、`indexEtag`、`format`、`content` |
+| `outline <id\|@active>` | `--blocks` 同时返回每个顶层块的类型和摘要。标题按顶层顺序排列。 | `page`、`etag`、`indexEtag`、`blockCount`、`outline`，可选 `blocks` |
 | `search <query>` | 关键词必填。`--limit <n>` 为正整数，默认 20。检索全部活页，标题命中优先，正文命中带片段。 | `query`、`matches`（`page`、`titleMatch`、`snippets`） |
 | `create --title <title>` | `--parent <id>` 默认根页，`--icon <emoji>` 默认 `📄`，`--markdown -\|<file>` 默认空页。`--activate` 默认关闭。 | `page`、`etag`、`indexEtag` |
-| `append <id> --if-match <etag>` | 使用页面 `etag` 追加非空 Markdown。`--markdown -\|<file>` 省略时读 stdin。 | `pageId`、`etag`、`indexEtag` |
-| `update <id> --if-match <etag>` | 使用页面 `etag` 整页替换正文，保留标题、图标、父页、同级顺序和创建时间。输入方式与 `append` 相同。 | `pageId`、`etag`、`indexEtag` |
-| `rename <id> --title <title> --if-match <indexEtag>` | 使用索引 `indexEtag` 更新标题，正文分片保持原样。 | `pageId`、`title`、`indexEtag` |
-| `delete <id> --if-match <indexEtag>` | 使用索引 `indexEtag` 删除整棵子树。删光时补一个空白根页。 | `removedPageIds`、`activePageId`、`indexEtag` |
+| `append <id\|@active> --if-match <etag>` | 使用页面 `etag` 追加非空 Markdown。`--markdown -\|<file>` 省略时读 stdin。 | `pageId`、`etag`、`indexEtag` |
+| `update <id\|@active> --if-match <etag>` | 使用页面 `etag` 整页替换正文，保留标题、图标、父页、同级顺序和创建时间。输入方式与 `append` 相同。 | `pageId`、`etag`、`indexEtag` |
+| `patch <id\|@active> --if-match <etag>` | 五种操作互斥：`--replace-block`、`--insert-before`、`--insert-after`、`--delete-block`、`--replace-section`。除 `--delete-block` 外读取非空 Markdown。 | `pageId`、`operation`、`targetBlockId`、`etag`、`indexEtag` |
+| `rename <id\|@active> --title <title> --if-match <indexEtag>` | 使用索引 `indexEtag` 更新标题，正文分片保持原样。 | `pageId`、`title`、`indexEtag` |
+| `move <id\|@active> --parent <id\|root> --if-match <indexEtag>` | 移至目标父页末尾；`root` 表示根级。禁止移入自身或后代。 | `pageId`、`parentId`、`order`、`indexEtag` |
+| `delete <id\|@active> --if-match <indexEtag>` | 默认把子树软删入回收站并保留分片；`--permanent` 才物理删除分片。 | `removedPageIds`、`activePageId`、`indexEtag`、`trashed` |
+| `trash-list` | 无位置参数。列出回收站页面及其删除时间。 | `trash`、`indexEtag` |
+| `restore <trash-id> --if-match <indexEtag>` | 恢复回收站页面及其回收站后代；原父页不在活页时自动提根。 | `restoredPageIds`、`page`、`indexEtag` |
+| `comments <id\|@active>` | `--unresolved` 只返回未解决线程。评论保存在索引中，不改正文分片。 | `page`、`indexEtag`、`comments` |
+| `comment-reply <id\|@active> <thread-id> --text <text> --if-match <indexEtag>` | `--author` 默认 `AI`；`--resolve` 同时标记线程已解决。 | `pageId`、`threadId`、`message`、`resolved`、`indexEtag` |
 | `add-image <file>` | 导入 PNG、JPEG、GIF 或 WebP，单文件上限 32 MiB。按 SHA-256 去重写入工作区 `assets/`。 | `asset`、`markdown`、`created` |
 | `gc [--grace-ms <n>]` | 扫描活页和回收站分片的图片引用。默认宽限 300000 ms；`--grace-ms 0` 立即回收。 | `scannedPages`、`referencedCount`、`orphanIds`、`removedCount`、`reclaimedBytes` |
 
+页面位置参数接受 UUID 或别名 `@active`，后者解析为 `index.json` 的 `activePageId`。工作区未初始化或没有活动页时返回退出码 3。`restore` 只接受回收站页面 ID。
+
 `page` 和 `pages[]` 的元数据包含 `id`、`parentId`、`title`、`icon`、`order`、`updatedAt`。时间戳单位为 Unix 毫秒，根页的 `parentId` 为 `null`。标题去除首尾空白，空标题报错。图标为空白时回退到 `📄`。
+
+`get` 的 `--block` 按顶层块 ID 导出局部内容，`--section` 从标题块导出到下一个同级或更高级标题之前。`--with-block-ids` 在每个顶层块前插入 `<!-- block:<id> -->`，只在 Markdown 格式有效。不带这些选项时输出与旧契约完全一致。`outline` 的 `outline[]` 包含 `blockId`、`level`、`text`、`blockIndex`，`blocks[]` 包含 `blockId`、`type`、`preview`（最多 80 字符）。
+
+`patch` 只替换目标范围内的顶层块，未触及块保留原节点、`blockId`、评论 Mark 和图片/表格/代码视图属性。`--replace-section` 的目标必须是标题块。目标块或标题不存在返回 3；小节目标不是标题、空内容或循环移动返回 5。`comment-reply` 的 `message` 包含 `id`、`author`、`text`，线程不存在返回 3。
 
 `search` 返回的 `page` 与 `list` 相同。关键词去除首尾空白；空白关键词、非正整数的 `--limit` 或小于 0 的 `--grace-ms` 返回参数错误。`titleMatch` 为 `true` 时 `snippets` 为空；正文命中时 `snippets` 含一段上下文。回收站页面不参与检索，但其中的图片引用仍会被 `gc` 视为存活引用。
 
@@ -27,7 +40,7 @@ CLI 操作本地 Electron v2 工作区。运行 `aiblock-doc --help` 查看当�
 
 `--markdown -` 显式走 stdin，文件输入按严格 UTF-8 读取，路径相对于执行目录。`append` 与 `update` 在交互终端且无输入时返回参数错误。`update` 还拒绝空白 Markdown、非 UTF-8 文件和渲染后没有任何可见块的内容。创建已有工作区的页面时，只有 `--activate` 会切换活动页，首次创建自动激活。若删除当前活动页，CLI 优先选择目标节点的后一个同级页，其次是前一个同级页、父页或首个剩余页。
 
-`--dry-run` 校验写命令并预演结果，正文和索引保持原样。工作区写命令的预演会短暂持有文件锁，目录尚不存在时可能被创建。`create` 预演返回 `dryRun: true` 和临时 `page`，两个标签为 `null`。`append`、`update`、`rename` 和 `delete` 预演增加 `dryRun: true` 并返回当前标签。`add-image` 预演只校验文件并计算确定性资产元数据，不创建 `assets/`。`gc` 预演只报告候选，不删除文件。`list`、`get` 和 `search` 接受该选项但执行正常读取。
+`--dry-run` 校验写命令并预演结果，正文和索引保持原样。工作区写命令的预演会短暂持有文件锁，目录尚不存在时可能被创建。`create` 预演返回 `dryRun: true` 和临时 `page`，两个标签为 `null`。`append`、`update`、`patch`、`rename`、`move`、`delete`、`comment-reply` 和 `restore` 预演增加 `dryRun: true` 并返回当前标签；`delete` 预演仍报告真实的 `trashed` 结果。`add-image` 预演只校验文件并计算确定性资产元数据，不创建 `assets/`。`gc` 预演只报告候选，不删除文件。`list`、`get`、`outline`、`search`、`comments` 和 `trash-list` 接受该选项但执行正常读取。
 
 ## JSON 信封与退出码
 
@@ -38,10 +51,10 @@ CLI 操作本地 Electron v2 工作区。运行 `aiblock-doc --help` 查看当�
 | 0 | 空 | 成功。读取 `data`。 |
 | 1 | `io_error` | 读取、写入或其他运行错误。核对路径和权限。 |
 | 1 | `workspace_error` | 错误类型已预留。当前命令通常以 `io_error` 报告 I/O 问题。 |
-| 2 | `usage` | 未知命令、缺少参数、非法 UUID 或非法格式选项。用 `--help` 核对。 |
-| 3 | `not_found` | 缺少工作区、页面、父页或图片文件。重新列出页面或检查文件路径。 |
+| 2 | `usage` | 未知命令、缺少参数、非法 UUID、非法格式、互斥选项冲突或缺少块操作。用 `--help` 核对。 |
+| 3 | `not_found` | 缺少工作区、页面、父页、块、评论线程、回收站页面或图片文件。重新列出页面或检查文件路径。 |
 | 4 | `conflict` | 页面或索引标签过期、磁盘变化或锁竞争。重读对应数据后确认再试。 |
-| 5 | `invalid_content` | 空标题、空追加或替换、无可见内容、无效图片或损坏的存储格式。`gc` 发现任何分片缺失或损坏时中止，不删除资产。修正内容，保留损坏文件供恢复。 |
+| 5 | `invalid_content` | 空标题、空追加或替换、无可见内容、无效图片、损坏的存储格式、非标题的小节目标或页面树循环。`gc` 发现任何分片缺失或损坏时中止，不删除资产。修正内容，保留损坏文件供恢复。 |
 
 <!-- #endregion command-contract -->
 
@@ -139,7 +152,106 @@ CLI 操作本地 Electron v2 工作区。运行 `aiblock-doc --help` 查看当�
   "data": {
     "removedPageIds": ["ee1d824e-1ee6-4ca3-9df3-cd79a9798d82"],
     "activePageId": "bec6266d-9ff3-43b2-b418-7b21466e8e6c",
+    "indexEtag": "ceee60b9d0adb6ce54d58a3a440dd8cef78dd9bed68e756cc9f1e738e4bce569",
+    "trashed": true
+  }
+}
+```
+
+`--permanent` 的响应把 `trashed` 设为 `false`，并物理删除分片。
+
+### `outline`
+
+```json
+{
+  "ok": true,
+  "data": {
+    "page": {"id": "ee1d824e-1ee6-4ca3-9df3-cd79a9798d82", "parentId": null, "title": "发布记录", "icon": "📝", "order": 0, "updatedAt": 1795592789650},
+    "etag": "6e366d8fbfc6f43ccb2b6c4e685051584e4a1478e9c920873a830f491e8efd9c",
+    "indexEtag": "31af79f8671bee23fc240529d4de129d9ba2d0e1b96ea33579dd10aebd207b34",
+    "blockCount": 3,
+    "outline": [{"blockId": "8d8a1d0e-7e7d-4d8a-9e03-53ac74fb7219", "level": 2, "text": "上线记录", "blockIndex": 0}],
+    "blocks": [{"blockId": "8d8a1d0e-7e7d-4d8a-9e03-53ac74fb7219", "type": "heading", "preview": "上线记录"}]
+  }
+}
+```
+
+### `patch`
+
+```json
+{
+  "ok": true,
+  "data": {
+    "pageId": "ee1d824e-1ee6-4ca3-9df3-cd79a9798d82",
+    "operation": "replace-section",
+    "targetBlockId": "8d8a1d0e-7e7d-4d8a-9e03-53ac74fb7219",
+    "etag": "26855490a609943367a4c6e2dce37862c46c883873bf268da51a9e6bfeba0ad0",
+    "indexEtag": "18316393bc3cdefd8d7dc3bd447750020cec1e406af6799d94115e48f531dd67"
+  }
+}
+```
+
+`patch --dry-run` 增加 `dryRun: true`，并返回替换前的两个标签。
+
+### `comments` 与 `comment-reply`
+
+```json
+{
+  "ok": true,
+  "data": {
+    "page": {"id": "ee1d824e-1ee6-4ca3-9df3-cd79a9798d82", "parentId": null, "title": "发布记录", "icon": "📝", "order": 0, "updatedAt": 1795592789650},
+    "indexEtag": "31af79f8671bee23fc240529d4de129d9ba2d0e1b96ea33579dd10aebd207b34",
+    "comments": [{"id": "0e38a55b-0e5e-4ec5-9417-dcc89b5fd6e1", "quote": "上线记录", "messages": [], "resolved": false}]
+  }
+}
+```
+
+```json
+{
+  "ok": true,
+  "data": {
+    "pageId": "ee1d824e-1ee6-4ca3-9df3-cd79a9798d82",
+    "threadId": "0e38a55b-0e5e-4ec5-9417-dcc89b5fd6e1",
+    "message": {"id": "cb59178d-9aa2-4a5f-babc-c71e49b8c621", "author": "AI", "text": "已处理，请复核。"},
+    "resolved": true,
+    "indexEtag": "18316393bc3cdefd8d7dc3bd447750020cec1e406af6799d94115e48f531dd67"
+  }
+}
+```
+
+### `trash-list` 与 `restore`
+
+```json
+{
+  "ok": true,
+  "data": {
+    "trash": [{"id": "bec6266d-9ff3-43b2-b418-7b21466e8e6c", "parentId": null, "title": "旧备忘", "icon": "📄", "deletedAt": 1795592789650}],
     "indexEtag": "ceee60b9d0adb6ce54d58a3a440dd8cef78dd9bed68e756cc9f1e738e4bce569"
+  }
+}
+```
+
+```json
+{
+  "ok": true,
+  "data": {
+    "restoredPageIds": ["bec6266d-9ff3-43b2-b418-7b21466e8e6c"],
+    "page": {"id": "bec6266d-9ff3-43b2-b418-7b21466e8e6c", "parentId": null, "title": "旧备忘", "icon": "📄", "order": 1, "updatedAt": 1795592789650},
+    "indexEtag": "2facfed2e10526a46b5e7218a7bbe954aa405cbc70f11f3ffe86b74ccb05c5a2"
+  }
+}
+```
+
+### `move`
+
+```json
+{
+  "ok": true,
+  "data": {
+    "pageId": "ee1d824e-1ee6-4ca3-9df3-cd79a9798d82",
+    "parentId": "bec6266d-9ff3-43b2-b418-7b21466e8e6c",
+    "order": 2,
+    "indexEtag": "18316393bc3cdefd8d7dc3bd447750020cec1e406af6799d94115e48f531dd67"
   }
 }
 ```
@@ -315,8 +427,8 @@ Markdown 保留这里列出的块和文本标记。评论、块 ID 等内部字�
 
 CLI 与桌面端共用磁盘写锁。两种标签分别是正文分片与工作区索引字节的 SHA-256。CLI 在持锁期间比较当前标签，再提交分片。索引与单页文件分别原子替换。桌面主进程对目录变动做 150 ms 防抖检测，并在窗口获得焦点时再检查一次。
 
-没有本地待写状态时，界面重读外部数据。CLI 的 `--activate` 随索引生效。若界面还有防抖草稿、脏页、脏索引或正在保存，收到外部变更会显示冲突，即使两次操作涉及不同页。冲突时先把需要保留的编辑复制出来，再在桌面端选择 **从磁盘重载** 或 **用本地覆盖保存**。前者丢弃未保存编辑，后者可覆盖外部版本。
+没有本地待写状态时，界面重读外部数据。CLI 的 `--activate` 随索引生效。`comments` 和 `comment-reply` 直接修改索引中的评论，`move`、`trash-list`、`restore` 与默认软删也只改动索引，桌面端会感知索引变化。若界面还有防抖草稿、脏页、脏索引或正在保存，收到外部变更会显示冲突，即使两次操作涉及不同页。冲突时先把需要保留的编辑复制出来，再在桌面端选择 **从磁盘重载** 或 **用本地覆盖保存**。前者丢弃未保存编辑，后者可覆盖外部版本。
 
-CLI 遇到退出码 4 时先重读，再检查原操作是否仍然合适。追加或整页替换前重读目标页的 `etag`。改名或删除重读索引的 `indexEtag`，删除还要核对后代。一次命令意外退出时先检查磁盘结果，以免重复追加或替换。保留锁文件，由 CLI 与桌面程序管理。
+CLI 遇到退出码 4 时先重读，再检查原操作是否仍然合适。追加、整页替换或局部 `patch` 前重读目标页的 `etag`。改名、移动、软删、恢复和评论回复重读索引的 `indexEtag`，删除还要核对后代。一次命令意外退出时先检查磁盘结果，以免重复追加或替换。保留锁文件，由 CLI 与桌面程序管理。
 
 <!-- #endregion desktop-sync -->

@@ -8,9 +8,13 @@ import { assignMissingBlockIds } from '../editor/extensions/block-id'
 import { docToMarkdown, markdownToDoc } from '../editor/markdown/markdown-codec'
 import { createDocumentSchema } from '../editor/schema'
 import type { Node as ProseMirrorNode, Schema } from '@tiptap/pm/model'
+import { BlockPatchError, extractDocumentOutline, listTopLevelBlocks, patchDocument, selectDocumentBlocks, sliceDocumentMarkdown } from '../editor/markdown/block-patch'
+import type { BlockPatchOperation } from '../editor/markdown/block-patch'
 import { openImageAssetFiles, readImageImport, scanOrphanImageAssets } from '../workspace/asset-files'
 import { isPageId, isWorkspaceIndex, pageMetadata } from '../workspace/workspace-format'
 import type { PageMetadata, PageShard, WorkspaceIndex } from '../workspace/workspace-format'
+import { movePage as storedMovePage, pageSubtree, restoreTrashedPage, trashPage } from '../workspace/page-store'
+import type { WorkspaceState } from '../workspace/page-store'
 import { searchWorkspacePages } from '../workspace/workspace-search'
 import { openWorkspaceFiles } from '../workspace/workspace-files'
 import type { WorkspaceFiles } from '../workspace/workspace-files'
@@ -92,10 +96,46 @@ function requireIndex(index: WorkspaceIndex | null): WorkspaceIndex {
   return index
 }
 
+export function isPageReference(id: string) {
+  return id === '@active' || isPageId(id)
+}
+
+function resolvePageId(index: WorkspaceIndex, id: string) {
+  if (id !== '@active') return id
+  if (!index.pages.some(page => page.id === index.activePageId)) {
+    throw notFoundError('工作区没有活动页。', '先用 create --activate 创建页面或运行 list 检查工作区。')
+  }
+  return index.activePageId
+}
+
 function findIndexPage(index: WorkspaceIndex, id: string) {
   const page = index.pages.find(candidate => candidate.id === id)
   if (!page) throw notFoundError(`页面不存在：${id}`)
   return page
+}
+
+function findTrashedPage(index: WorkspaceIndex, id: string) {
+  const page = index.trash?.find(candidate => candidate.id === id)
+  if (!page) throw notFoundError(`回收站中没有该页面：${id}`, '先用 trash-list 查看已删除页面。')
+  return page
+}
+
+function workspaceOf(index: WorkspaceIndex): WorkspaceState<PageMetadata> {
+  return { activePageId: index.activePageId, pages: index.pages, trash: index.trash, demoVersion: index.demoVersion }
+}
+
+function indexOf(index: WorkspaceIndex, workspace: WorkspaceState<PageMetadata>): WorkspaceIndex {
+  const trash = workspace.trash === undefined ? index.trash : workspace.trash
+  return {
+    ...index,
+    activePageId: workspace.activePageId,
+    pages: workspace.pages.map(pageMetadata),
+    ...(trash === undefined ? {} : { trash }),
+  }
+}
+
+function blockPatchError(error: BlockPatchError) {
+  return error.code === 'block_not_found' ? notFoundError(error.message) : contentError(error.message)
 }
 
 function checkEtag(actual: string | null, expected: string, label: string) {
@@ -131,20 +171,59 @@ export async function searchPages(files: WorkspaceFiles, query: string, limit: n
   }
 }
 
-export async function getPage(files: WorkspaceFiles, id: string, format: 'markdown' | 'json') {
-  if (!isPageId(id)) throw notFoundError(`页面 ID 无效：${id}`)
+export async function getPage(files: WorkspaceFiles, id: string, format: 'markdown' | 'json', options: {
+  blockId?: string
+  sectionBlockId?: string
+  withBlockIds?: boolean
+} = {}) {
+  if (!isPageReference(id)) throw notFoundError(`页面 ID 无效：${id}`)
   const index = await files.readIndexSnapshot()
   if (!index.value) throw notFoundError('工作区尚未初始化。', '先运行 aiblock-doc create 创建第一页。')
-  const page = findIndexPage(index.value, id)
-  const snapshot = await files.readPageSnapshot(id)
-  if (!snapshot.value) throw notFoundError(`页面不存在：${id}`)
+  const pageId = resolvePageId(index.value, id)
+  const page = findIndexPage(index.value, pageId)
+  const snapshot = await files.readPageSnapshot(pageId)
+  if (!snapshot.value) throw notFoundError(`页面不存在：${pageId}`)
   const doc = pageContent(workspaceSchema, snapshot.value)
+  const sliced = options.blockId !== undefined || options.sectionBlockId !== undefined
+  let content: string | object
+  try {
+    content = format === 'json'
+      ? sliced
+        ? { type: 'doc', content: selectDocumentBlocks(doc, options).map(node => node.toJSON()) }
+        : doc.toJSON()
+      : sliced || options.withBlockIds
+        ? sliceDocumentMarkdown(doc, options)
+        : docToMarkdown(doc)
+  } catch (error) {
+    if (error instanceof BlockPatchError) throw blockPatchError(error)
+    throw error
+  }
   return {
     page: metadata(page),
     etag: snapshot.etag,
     indexEtag: index.etag,
     format,
-    content: format === 'json' ? doc.toJSON() : docToMarkdown(doc),
+    content,
+  }
+}
+
+export async function outlinePage(files: WorkspaceFiles, id: string, includeBlocks: boolean) {
+  if (!isPageReference(id)) throw notFoundError(`页面 ID 无效：${id}`)
+  const index = await files.readIndexSnapshot()
+  if (!index.value) throw notFoundError('工作区尚未初始化。', '先运行 aiblock-doc create 创建第一页。')
+  const pageId = resolvePageId(index.value, id)
+  const page = findIndexPage(index.value, pageId)
+  const snapshot = await files.readPageSnapshot(pageId)
+  if (!snapshot.value) throw notFoundError(`页面不存在：${pageId}`)
+  const doc = pageContent(workspaceSchema, snapshot.value)
+  const outline = extractDocumentOutline(doc)
+  return {
+    page: metadata(page),
+    etag: snapshot.etag,
+    indexEtag: index.etag,
+    blockCount: outline.blockCount,
+    outline: outline.outline,
+    ...(includeBlocks ? { blocks: listTopLevelBlocks(doc) } : {}),
   }
 }
 
@@ -198,31 +277,32 @@ export async function appendPage(files: WorkspaceFiles, id: string, input: {
   markdown: string
   dryRun: boolean
 }) {
-  if (!isPageId(id)) throw notFoundError(`页面 ID 无效：${id}`)
+  if (!isPageReference(id)) throw notFoundError(`页面 ID 无效：${id}`)
   if (!input.markdown.trim()) throw contentError('追加内容为空。')
   return files.mutate(async transaction => {
     const indexSnapshot = await transaction.readIndexSnapshot()
     const index = requireIndex(indexSnapshot.value)
-    findIndexPage(index, id)
-    const pageSnapshot = await transaction.readPageSnapshot(id)
-    if (!pageSnapshot.value) throw notFoundError(`页面不存在：${id}`)
+    const pageId = resolvePageId(index, id)
+    findIndexPage(index, pageId)
+    const pageSnapshot = await transaction.readPageSnapshot(pageId)
+    if (!pageSnapshot.value) throw notFoundError(`页面不存在：${pageId}`)
     checkEtag(pageSnapshot.etag, input.ifMatch, '页面')
     const now = Date.now()
     const current = pageContent(workspaceSchema, pageSnapshot.value)
     const incoming = parseMarkdown(workspaceSchema, input.markdown)
     const merged = assignMissingBlockIds(current.copy(current.content.append(incoming.content)))
     merged.check()
-    const nextPage = shard(id, merged.toJSON(), now)
+    const nextPage = shard(pageId, merged.toJSON(), now)
     const nextIndex: WorkspaceIndex = {
       ...index,
-      pages: index.pages.map(page => page.id === id ? { ...page, updatedAt: now } : page),
+      pages: index.pages.map(page => page.id === pageId ? { ...page, updatedAt: now } : page),
     }
     if (!isWorkspaceIndex(nextIndex)) throw contentError('生成的索引不符合工作区格式。')
-    if (input.dryRun) return { dryRun: true, pageId: id, etag: pageSnapshot.etag, indexEtag: indexSnapshot.etag }
+    if (input.dryRun) return { dryRun: true, pageId, etag: pageSnapshot.etag, indexEtag: indexSnapshot.etag }
     await transaction.write({ index: nextIndex, pages: [nextPage], removedPageIds: [] })
-    const nextPageSnapshot = await transaction.readPageSnapshot(id)
+    const nextPageSnapshot = await transaction.readPageSnapshot(pageId)
     const nextIndexSnapshot = await transaction.readIndexSnapshot()
-    return { pageId: id, etag: nextPageSnapshot.etag, indexEtag: nextIndexSnapshot.etag }
+    return { pageId, etag: nextPageSnapshot.etag, indexEtag: nextIndexSnapshot.etag }
   })
 }
 
@@ -231,29 +311,30 @@ export async function updatePage(files: WorkspaceFiles, id: string, input: {
   markdown: string
   dryRun: boolean
 }) {
-  if (!isPageId(id)) throw notFoundError(`页面 ID 无效：${id}`)
+  if (!isPageReference(id)) throw notFoundError(`页面 ID 无效：${id}`)
   if (!input.markdown.trim()) throw contentError('替换内容为空。')
   return files.mutate(async transaction => {
     const indexSnapshot = await transaction.readIndexSnapshot()
     const index = requireIndex(indexSnapshot.value)
-    findIndexPage(index, id)
-    const pageSnapshot = await transaction.readPageSnapshot(id)
-    if (!pageSnapshot.value) throw notFoundError(`页面不存在：${id}`)
+    const pageId = resolvePageId(index, id)
+    findIndexPage(index, pageId)
+    const pageSnapshot = await transaction.readPageSnapshot(pageId)
+    if (!pageSnapshot.value) throw notFoundError(`页面不存在：${pageId}`)
     checkEtag(pageSnapshot.etag, input.ifMatch, '页面')
     const doc = parseMarkdown(workspaceSchema, input.markdown)
     if (!hasVisibleContent(doc)) throw contentError('替换内容为空。', '提供至少一个可见块。')
     const now = Date.now()
-    const nextPage = shard(id, doc.toJSON(), now)
+    const nextPage = shard(pageId, doc.toJSON(), now)
     const nextIndex: WorkspaceIndex = {
       ...index,
-      pages: index.pages.map(page => page.id === id ? { ...page, updatedAt: now } : page),
+      pages: index.pages.map(page => page.id === pageId ? { ...page, updatedAt: now } : page),
     }
     if (!isWorkspaceIndex(nextIndex)) throw contentError('生成的索引不符合工作区格式。')
-    if (input.dryRun) return { dryRun: true, pageId: id, etag: pageSnapshot.etag, indexEtag: indexSnapshot.etag }
+    if (input.dryRun) return { dryRun: true, pageId, etag: pageSnapshot.etag, indexEtag: indexSnapshot.etag }
     await transaction.write({ index: nextIndex, pages: [nextPage], removedPageIds: [] })
-    const nextPageSnapshot = await transaction.readPageSnapshot(id)
+    const nextPageSnapshot = await transaction.readPageSnapshot(pageId)
     const nextIndexSnapshot = await transaction.readIndexSnapshot()
-    return { pageId: id, etag: nextPageSnapshot.etag, indexEtag: nextIndexSnapshot.etag }
+    return { pageId, etag: nextPageSnapshot.etag, indexEtag: nextIndexSnapshot.etag }
   })
 }
 
@@ -262,47 +343,61 @@ export async function renamePage(files: WorkspaceFiles, id: string, input: {
   ifMatch: string
   dryRun: boolean
 }) {
-  if (!isPageId(id)) throw notFoundError(`页面 ID 无效：${id}`)
+  if (!isPageReference(id)) throw notFoundError(`页面 ID 无效：${id}`)
   const title = input.title.trim()
   if (!title) throw contentError('标题不能为空。')
   return files.mutate(async transaction => {
     const indexSnapshot = await transaction.readIndexSnapshot()
     const index = requireIndex(indexSnapshot.value)
-    findIndexPage(index, id)
+    const pageId = resolvePageId(index, id)
+    findIndexPage(index, pageId)
     checkEtag(indexSnapshot.etag, input.ifMatch, '索引')
     const now = Date.now()
     const nextIndex: WorkspaceIndex = {
       ...index,
-      pages: index.pages.map(page => page.id === id ? { ...page, title, updatedAt: now } : page),
+      pages: index.pages.map(page => page.id === pageId ? { ...page, title, updatedAt: now } : page),
     }
     if (!isWorkspaceIndex(nextIndex)) throw contentError('生成的索引不符合工作区格式。')
-    if (input.dryRun) return { dryRun: true, pageId: id, title, indexEtag: indexSnapshot.etag }
+    if (input.dryRun) return { dryRun: true, pageId, title, indexEtag: indexSnapshot.etag }
     await transaction.write({ index: nextIndex, pages: [], removedPageIds: [] })
     const nextIndexSnapshot = await transaction.readIndexSnapshot()
-    return { pageId: id, title, indexEtag: nextIndexSnapshot.etag }
+    return { pageId, title, indexEtag: nextIndexSnapshot.etag }
   })
 }
 
 export async function deletePage(files: WorkspaceFiles, id: string, input: {
   ifMatch: string
   dryRun: boolean
+  permanent: boolean
 }) {
-  if (!isPageId(id)) throw notFoundError(`页面 ID 无效：${id}`)
+  if (!isPageReference(id)) throw notFoundError(`页面 ID 无效：${id}`)
   return files.mutate(async transaction => {
     const indexSnapshot = await transaction.readIndexSnapshot()
     const index = requireIndex(indexSnapshot.value)
-    const target = findIndexPage(index, id)
+    const pageId = resolvePageId(index, id)
+    const target = findIndexPage(index, pageId)
     checkEtag(indexSnapshot.etag, input.ifMatch, '索引')
-    const removed = new Set<string>()
-    const pending = [id]
-    while (pending.length) {
-      const current = pending.pop()!
-      if (removed.has(current)) continue
-      removed.add(current)
-      for (const page of index.pages) if (page.parentId === current) pending.push(page.id)
-    }
-    const remaining = index.pages.filter(page => !removed.has(page.id))
+    const removed = pageSubtree(index, pageId)
+    const removedPageIds = [...removed]
     const now = Date.now()
+
+    if (!input.permanent) {
+      const fallbackId = randomUUID()
+      const trashed = trashPage(workspaceOf(index), pageId, { id: fallbackId, now })
+      const nextIndex = indexOf(index, trashed)
+      const replacement = nextIndex.pages.some(page => page.id === fallbackId)
+        ? shard(fallbackId, assignMissingBlockIds(emptyDoc(workspaceSchema)).toJSON(), now)
+        : null
+      if (!isWorkspaceIndex(nextIndex)) throw contentError('删除后无法生成有效的工作区索引。')
+      if (input.dryRun) {
+        return { dryRun: true, removedPageIds, activePageId: nextIndex.activePageId, indexEtag: indexSnapshot.etag, trashed: true }
+      }
+      await transaction.write({ index: nextIndex, pages: replacement ? [replacement] : [], removedPageIds: [] })
+      const nextIndexSnapshot = await transaction.readIndexSnapshot()
+      return { removedPageIds, activePageId: nextIndex.activePageId, indexEtag: nextIndexSnapshot.etag, trashed: true }
+    }
+
+    const remaining = index.pages.filter(page => !removed.has(page.id))
     let activePageId = index.activePageId
     let replacement: PageShard | null = null
     if (!remaining.length) {
@@ -329,15 +424,195 @@ export async function deletePage(files: WorkspaceFiles, id: string, input: {
     const nextIndex: WorkspaceIndex = { ...index, activePageId, pages: remaining }
     if (!isWorkspaceIndex(nextIndex)) throw contentError('删除后无法生成有效的工作区索引。')
     if (input.dryRun) {
-      return { dryRun: true, removedPageIds: [...removed], activePageId, indexEtag: indexSnapshot.etag }
+      return { dryRun: true, removedPageIds, activePageId, indexEtag: indexSnapshot.etag, trashed: false }
     }
     await transaction.write({
       index: nextIndex,
       pages: replacement ? [replacement] : [],
-      removedPageIds: [...removed],
+      removedPageIds,
     })
     const nextIndexSnapshot = await transaction.readIndexSnapshot()
-    return { removedPageIds: [...removed], activePageId, indexEtag: nextIndexSnapshot.etag }
+    return { removedPageIds, activePageId, indexEtag: nextIndexSnapshot.etag, trashed: false }
+  })
+}
+
+function patchOperation(input: {
+  operation: BlockPatchOperation['operation']
+  targetBlockId: string
+  markdown: string
+}): BlockPatchOperation {
+  if (input.operation === 'delete-block') return { operation: 'delete-block', targetBlockId: input.targetBlockId }
+  return { operation: input.operation, targetBlockId: input.targetBlockId, markdown: input.markdown }
+}
+
+export async function patchPage(files: WorkspaceFiles, id: string, input: {
+  ifMatch: string
+  operation: BlockPatchOperation['operation']
+  targetBlockId: string
+  markdown: string
+  dryRun: boolean
+}) {
+  if (!isPageReference(id)) throw notFoundError(`页面 ID 无效：${id}`)
+  return files.mutate(async transaction => {
+    const indexSnapshot = await transaction.readIndexSnapshot()
+    const index = requireIndex(indexSnapshot.value)
+    const pageId = resolvePageId(index, id)
+    findIndexPage(index, pageId)
+    const pageSnapshot = await transaction.readPageSnapshot(pageId)
+    if (!pageSnapshot.value) throw notFoundError(`页面不存在：${pageId}`)
+    checkEtag(pageSnapshot.etag, input.ifMatch, '页面')
+    const doc = pageContent(workspaceSchema, pageSnapshot.value)
+    let nextDoc: ProseMirrorNode
+    try {
+      nextDoc = patchDocument(workspaceSchema, doc, patchOperation(input))
+    } catch (error) {
+      if (error instanceof BlockPatchError) throw blockPatchError(error)
+      throw error
+    }
+    const now = Date.now()
+    const nextPage = shard(pageId, nextDoc.toJSON(), now)
+    const nextIndex: WorkspaceIndex = {
+      ...index,
+      pages: index.pages.map(page => page.id === pageId ? { ...page, updatedAt: now } : page),
+    }
+    if (!isWorkspaceIndex(nextIndex)) throw contentError('生成的索引不符合工作区格式。')
+    const result = { pageId, operation: input.operation, targetBlockId: input.targetBlockId }
+    if (input.dryRun) {
+      return { ...result, dryRun: true, etag: pageSnapshot.etag, indexEtag: indexSnapshot.etag }
+    }
+    await transaction.write({ index: nextIndex, pages: [nextPage], removedPageIds: [] })
+    const nextPageSnapshot = await transaction.readPageSnapshot(pageId)
+    const nextIndexSnapshot = await transaction.readIndexSnapshot()
+    return { ...result, etag: nextPageSnapshot.etag, indexEtag: nextIndexSnapshot.etag }
+  })
+}
+
+export async function commentsPage(files: WorkspaceFiles, id: string, unresolved: boolean) {
+  if (!isPageReference(id)) throw notFoundError(`页面 ID 无效：${id}`)
+  const indexSnapshot = await files.readIndexSnapshot()
+  const index = requireIndex(indexSnapshot.value)
+  const pageId = resolvePageId(index, id)
+  const page = findIndexPage(index, pageId)
+  return {
+    page: metadata(page),
+    indexEtag: indexSnapshot.etag,
+    comments: unresolved ? page.comments.filter(thread => !thread.resolved) : page.comments,
+  }
+}
+
+export async function replyToComment(files: WorkspaceFiles, id: string, threadId: string, input: {
+  text: string
+  author?: string
+  resolve: boolean
+  ifMatch: string
+  dryRun: boolean
+}) {
+  if (!isPageReference(id)) throw notFoundError(`页面 ID 无效：${id}`)
+  if (!input.text.trim()) throw contentError('回复内容为空。')
+  const author = input.author?.trim() || 'AI'
+  return files.mutate(async transaction => {
+    const indexSnapshot = await transaction.readIndexSnapshot()
+    const index = requireIndex(indexSnapshot.value)
+    const pageId = resolvePageId(index, id)
+    const page = findIndexPage(index, pageId)
+    checkEtag(indexSnapshot.etag, input.ifMatch, '索引')
+    const thread = page.comments.find(candidate => candidate.id === threadId)
+    if (!thread) throw notFoundError(`评论线程不存在：${threadId}`, '先用 comments 查看线程 ID。')
+    const now = Date.now()
+    const message = { id: randomUUID(), author, text: input.text }
+    const resolved = input.resolve || thread.resolved
+    const nextIndex: WorkspaceIndex = {
+      ...index,
+      pages: index.pages.map(candidate => candidate.id === pageId ? {
+        ...candidate,
+        updatedAt: now,
+        comments: candidate.comments.map(item => item.id === threadId
+          ? { ...item, messages: [...item.messages, message], resolved }
+          : item),
+      } : candidate),
+    }
+    if (!isWorkspaceIndex(nextIndex)) throw contentError('生成的索引不符合工作区格式。')
+    const result = { pageId, threadId, message, resolved }
+    if (input.dryRun) return { ...result, dryRun: true, indexEtag: indexSnapshot.etag }
+    await transaction.write({ index: nextIndex, pages: [], removedPageIds: [] })
+    const nextIndexSnapshot = await transaction.readIndexSnapshot()
+    return { ...result, indexEtag: nextIndexSnapshot.etag }
+  })
+}
+
+export async function movePageCli(files: WorkspaceFiles, id: string, input: {
+  parent: string
+  ifMatch: string
+  dryRun: boolean
+}) {
+  if (!isPageReference(id)) throw notFoundError(`页面 ID 无效：${id}`)
+  return files.mutate(async transaction => {
+    const indexSnapshot = await transaction.readIndexSnapshot()
+    const index = requireIndex(indexSnapshot.value)
+    const pageId = resolvePageId(index, id)
+    const page = findIndexPage(index, pageId)
+    checkEtag(indexSnapshot.etag, input.ifMatch, '索引')
+    const parentId = input.parent === 'root' ? null : input.parent
+    if (parentId !== null) {
+      if (!isPageId(parentId)) throw contentError(`父页面 ID 无效：${parentId}`)
+      findIndexPage(index, parentId)
+      if (parentId === pageId || pageSubtree(workspaceOf(index), pageId).has(parentId)) {
+        throw contentError('不能把页面移动到自身或其后代下。')
+      }
+    }
+    const now = Date.now()
+    let nextIndex: WorkspaceIndex
+    if (page.parentId === parentId) {
+      const order = nextOrder(index, parentId)
+      nextIndex = {
+        ...index,
+        pages: index.pages.map(candidate => candidate.id === pageId ? { ...candidate, order, updatedAt: now } : candidate),
+      }
+    } else {
+      nextIndex = indexOf(index, storedMovePage(workspaceOf(index), pageId, parentId, now))
+    }
+    const moved = nextIndex.pages.find(candidate => candidate.id === pageId)!
+    if (!isWorkspaceIndex(nextIndex)) throw contentError('移动后无法生成有效的工作区索引。')
+    const result = { pageId, parentId: moved.parentId, order: moved.order }
+    if (input.dryRun) return { ...result, dryRun: true, indexEtag: indexSnapshot.etag }
+    await transaction.write({ index: nextIndex, pages: [], removedPageIds: [] })
+    const nextIndexSnapshot = await transaction.readIndexSnapshot()
+    return { ...result, indexEtag: nextIndexSnapshot.etag }
+  })
+}
+
+export async function trashList(files: WorkspaceFiles) {
+  const indexSnapshot = await files.readIndexSnapshot()
+  return {
+    trash: (indexSnapshot.value?.trash ?? []).map(({ id, parentId, title, icon, deletedAt }) => ({
+      id, parentId, title, icon, deletedAt,
+    })),
+    indexEtag: indexSnapshot.etag,
+  }
+}
+
+export async function restorePage(files: WorkspaceFiles, id: string, input: {
+  ifMatch: string
+  dryRun: boolean
+}) {
+  if (!isPageId(id)) throw notFoundError(`页面 ID 无效：${id}`)
+  return files.mutate(async transaction => {
+    const indexSnapshot = await transaction.readIndexSnapshot()
+    const index = requireIndex(indexSnapshot.value)
+    checkEtag(indexSnapshot.etag, input.ifMatch, '索引')
+    findTrashedPage(index, id)
+    const before = index.trash ?? []
+    const nextIndex = indexOf(index, restoreTrashedPage(workspaceOf(index), id))
+    const remaining = new Set((nextIndex.trash ?? []).map(page => page.id))
+    const restoredPageIds = before.filter(page => !remaining.has(page.id)).map(page => page.id)
+    const page = nextIndex.pages.find(candidate => candidate.id === id)
+    if (!page) throw contentError('恢复后无法找到页面。')
+    if (!isWorkspaceIndex(nextIndex)) throw contentError('恢复后无法生成有效的工作区索引。')
+    const result = { restoredPageIds, page: metadata(page) }
+    if (input.dryRun) return { ...result, dryRun: true, indexEtag: indexSnapshot.etag }
+    await transaction.write({ index: nextIndex, pages: [], removedPageIds: [] })
+    const nextIndexSnapshot = await transaction.readIndexSnapshot()
+    return { ...result, indexEtag: nextIndexSnapshot.etag }
   })
 }
 
