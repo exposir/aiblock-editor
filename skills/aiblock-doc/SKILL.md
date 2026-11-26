@@ -1,6 +1,6 @@
 ---
 name: aiblock-doc
-description: 用本地 aiblock-doc CLI 全文搜索、阅读大纲和局部小节，精准 patch 块，读写划词评论，整理页面树并通过回收站安全删除或恢复 AIBlock Editor 桌面工作区页面，也支持图片导入与资产回收。用户要求把内容记进本地知识库、查找或修改已有笔记时使用。
+description: 用本地 aiblock-doc CLI 操作 AIBlock Editor 桌面工作区（全文搜索、大纲与局部读写、精准 patch 块、划词评论、页面树整理、回收站删除/恢复、图片导入与资产回收）。仅在用户输入 /aiblock-doc 命令或明确提及 aiblock / AIBlock 时触发；泛称「记笔记」「本地知识库」「写文档」不自动触发。
 ---
 
 # 操作本地桌面工作区
