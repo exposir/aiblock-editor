@@ -130,6 +130,12 @@ function updateDate(value: string): number {
   return Number.isFinite(parsed) ? parsed : 0
 }
 
+function documentScrollHeight(): number {
+  return Math.max(document.documentElement?.scrollHeight ?? 0, document.body?.scrollHeight ?? 0)
+}
+
+type ScrollIntent = { readonly kind: 'top' } | { readonly kind: 'bottom' } | { readonly kind: 'preserve'; readonly y: number }
+
 export function PaseoWorkspace({ bridge, schema, appearance, onSourceChange, onSaveDocument }: PaseoWorkspaceProps) {
   const [tree, setTree] = useState<PaseoTreeSnapshot | null>(null)
   const [selectedAgentId, setSelectedAgentId] = useState<string | null>(readSelectedAgent)
@@ -146,12 +152,16 @@ export function PaseoWorkspace({ bridge, schema, appearance, onSourceChange, onS
   const treeRequest = useRef(0)
   const logsRequest = useRef(0)
   const selectedRef = useRef(selectedAgentId)
-  const scrollRestore = useRef<number | null>(null)
+  const messageOrderRef = useRef(messageOrder)
+  const pendingScroll = useRef<{ y: number; nearBottom: boolean } | null>(null)
+  const scrollIntent = useRef<ScrollIntent | null>(null)
+  const bottomFrame = useRef<number | null>(null)
   const refreshTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined)
   const copiedTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined)
   const mounted = useRef(true)
 
   selectedRef.current = selectedAgentId
+  messageOrderRef.current = messageOrder
 
   const empty = tree ?? emptyTree
   const agent = selectedAgentId ? allAgents(empty).find(value => value.id === selectedAgentId) : undefined
@@ -182,9 +192,11 @@ export function PaseoWorkspace({ bridge, schema, appearance, onSourceChange, onS
 
   const fetchLogs = useCallback(async (selectedId: string, options: { silent?: boolean; force?: boolean } = {}) => {
     const sequence = ++logsRequest.current
-    if (options.silent) {
-      scrollRestore.current = window.scrollY
-    } else {
+    const y = window.scrollY
+    const nearBottom = messageOrderRef.current === 'asc' &&
+      documentScrollHeight() - (y + window.innerHeight) <= 80
+    pendingScroll.current = { y, nearBottom }
+    if (!options.silent) {
       setLogs(null)
       setLogsFailed(false)
       setLogsError('')
@@ -192,14 +204,23 @@ export function PaseoWorkspace({ bridge, schema, appearance, onSourceChange, onS
     try {
       const value = await bridge.readPaseoLogs(selectedId, options.force ? { force: true } : undefined)
       if (!mounted.current || sequence !== logsRequest.current) return
+      const pending = pendingScroll.current
+      pendingScroll.current = null
+      if (options.silent) {
+        scrollIntent.current = messageOrderRef.current === 'asc' && pending?.nearBottom
+          ? { kind: 'bottom' }
+          : { kind: 'preserve', y: pending?.y ?? window.scrollY }
+      } else {
+        scrollIntent.current = messageOrderRef.current === 'asc' ? { kind: 'bottom' } : { kind: 'top' }
+      }
       setLogs(value)
       setLogsFailed(false)
       setLogsError('')
       setNotice('')
     } catch (error) {
       if (!mounted.current || sequence !== logsRequest.current) return
+      pendingScroll.current = null
       const detail = formatPaseoError(error)
-      scrollRestore.current = null
       if (options.silent) setNotice(`无法刷新这个 Paseo 窗口，当前仍显示上一次的内容：${detail}`)
       else {
         setLogs(null)
@@ -274,14 +295,34 @@ export function PaseoWorkspace({ bridge, schema, appearance, onSourceChange, onS
   useEffect(() => () => {
     clearTimeout(refreshTimer.current)
     clearTimeout(copiedTimer.current)
+    if (bottomFrame.current !== null) window.cancelAnimationFrame(bottomFrame.current)
   }, [])
 
+  function cancelBottomFrame() {
+    if (bottomFrame.current === null) return
+    window.cancelAnimationFrame(bottomFrame.current)
+    bottomFrame.current = null
+  }
+
   useLayoutEffect(() => {
-    const y = scrollRestore.current
-    if (y === null) return
-    scrollRestore.current = null
-    window.scrollTo(0, y)
-  }, [logs])
+    const intent = scrollIntent.current
+    if (!intent) return
+    scrollIntent.current = null
+    cancelBottomFrame()
+    if (intent.kind === 'preserve') {
+      window.scrollTo(0, intent.y)
+      return
+    }
+    if (intent.kind === 'top') {
+      window.scrollTo(0, 0)
+      return
+    }
+    window.scrollTo(0, documentScrollHeight())
+    bottomFrame.current = window.requestAnimationFrame(() => {
+      bottomFrame.current = null
+      if (mounted.current) window.scrollTo(0, documentScrollHeight())
+    })
+  }, [logs, messageOrder])
 
   function selectAgent(id: string) {
     if (id === selectedRef.current) {
@@ -312,9 +353,9 @@ export function PaseoWorkspace({ bridge, schema, appearance, onSourceChange, onS
 
   function toggleMessageOrder() {
     const next = messageOrder === 'asc' ? 'desc' : 'asc'
+    scrollIntent.current = next === 'asc' ? { kind: 'bottom' } : { kind: 'top' }
     setMessageOrder(next)
     rememberMessageOrder(next)
-    window.scrollTo(0, 0)
   }
 
   async function copyMarkdown() {

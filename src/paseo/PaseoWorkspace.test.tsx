@@ -1,7 +1,7 @@
 import { act, render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { getSchema } from '@tiptap/core'
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, onTestFinished, vi } from 'vitest'
 import { createEditorExtensions } from '../editor/extensions'
 import type { DesktopBridge } from '../desktop/bridge'
 import { PaseoWorkspace, PASEO_MESSAGE_ORDER_STORAGE_KEY, PASEO_SELECTION_STORAGE_KEY } from './PaseoWorkspace'
@@ -109,6 +109,50 @@ async function previewHas(text: string) {
   await waitFor(() => expect(screen.getByRole('article', { name: '文档预览' })).toHaveTextContent(text))
 }
 
+function setScrollMetrics(height: number, viewport: number) {
+  let y = 0
+  const documentHeight = Object.getOwnPropertyDescriptor(document.documentElement, 'scrollHeight')
+  const bodyHeight = Object.getOwnPropertyDescriptor(document.body, 'scrollHeight')
+  const innerHeight = Object.getOwnPropertyDescriptor(window, 'innerHeight')
+  const scrollY = Object.getOwnPropertyDescriptor(window, 'scrollY')
+  Object.defineProperty(document.documentElement, 'scrollHeight', { configurable: true, get: () => height })
+  Object.defineProperty(document.body, 'scrollHeight', { configurable: true, get: () => height - 100 })
+  Object.defineProperty(window, 'innerHeight', { configurable: true, get: () => viewport })
+  Object.defineProperty(window, 'scrollY', { configurable: true, get: () => y })
+  onTestFinished(() => {
+    const restore = (target: object, property: string, descriptor?: PropertyDescriptor) => {
+      if (descriptor) Object.defineProperty(target, property, descriptor)
+      else Reflect.deleteProperty(target, property)
+    }
+    restore(document.documentElement, 'scrollHeight', documentHeight)
+    restore(document.body, 'scrollHeight', bodyHeight)
+    restore(window, 'innerHeight', innerHeight)
+    restore(window, 'scrollY', scrollY)
+  })
+  return { setY: (value: number) => { y = value } }
+}
+
+function controlAnimationFrames() {
+  let nextId = 1
+  const callbacks = new Map<number, FrameRequestCallback>()
+  vi.spyOn(window, 'requestAnimationFrame').mockImplementation(callback => {
+    const id = nextId++
+    callbacks.set(id, callback)
+    return id
+  })
+  vi.spyOn(window, 'cancelAnimationFrame').mockImplementation(id => { callbacks.delete(id) })
+  return {
+    flush() {
+      for (let pass = 0; pass < 5 && callbacks.size; pass++) {
+        const current = [...callbacks.values()]
+        callbacks.clear()
+        for (const callback of current) callback(performance.now())
+      }
+    },
+    pending: () => callbacks.size,
+  }
+}
+
 beforeEach(() => {
   localStorage.clear()
   vi.spyOn(window, 'scrollTo').mockImplementation(() => {})
@@ -121,6 +165,29 @@ afterEach(() => {
 })
 
 describe('PaseoWorkspace', () => {
+  it('starts asc windows and later window switches at the bottom, including the second frame', async () => {
+    setScrollMetrics(2200, 600)
+    const frames = controlAnimationFrames()
+    const agents = [agent('agent-a', 'Agent A'), agent('agent-b', 'Agent B')]
+    const bridge = bridgeWith(
+      async () => tree(agents),
+      async agentId => logs(agentId === 'agent-b' ? 'Agent B content' : 'Agent A content', agentId),
+    )
+    const user = userEvent.setup()
+    renderWorkspace(bridge.bridge)
+    await screen.findByRole('navigation', { name: 'Paseo 窗口树' })
+    await previewHas('Agent A content')
+    expect(window.scrollTo).toHaveBeenLastCalledWith(0, 2200)
+    act(() => frames.flush())
+    expect(window.scrollTo).toHaveBeenLastCalledWith(0, 2200)
+
+    await user.click(screen.getByRole('button', { name: /Agent B/ }))
+    await previewHas('Agent B content')
+    expect(window.scrollTo).toHaveBeenLastCalledWith(0, 2200)
+    act(() => frames.flush())
+    expect(window.scrollTo).toHaveBeenLastCalledWith(0, 2200)
+  })
+
   it('ignores a stale agent response after switching quickly to another agent', async () => {
     const agents = [agent('agent-a', 'Agent A'), agent('agent-b', 'Agent B')]
     let resolveA!: (value: PaseoAgentLogs) => void
@@ -142,6 +209,8 @@ describe('PaseoWorkspace', () => {
   })
 
   it('silently refreshes the current window and restores its scroll position', async () => {
+    const metrics = setScrollMetrics(2200, 600)
+    const frames = controlAnimationFrames()
     let changeListener: (() => void) | undefined
     let currentTree = tree([agent('agent-a', 'Agent A')])
     let currentLogs = logs('Old content', 'agent-a')
@@ -155,7 +224,8 @@ describe('PaseoWorkspace', () => {
     )
     renderWorkspace(bridge.bridge)
     await previewHas('Old content')
-    vi.spyOn(window, 'scrollY', 'get').mockReturnValue(420)
+    act(() => frames.flush())
+    metrics.setY(800)
     vi.mocked(window.scrollTo).mockClear()
     currentTree = tree([agent('agent-a', 'Agent A', '2026-11-26T10:01:00.000Z')], '2026-11-26T10:01:00.000Z')
     currentLogs = logs('Refreshed content', 'agent-a')
@@ -163,7 +233,36 @@ describe('PaseoWorkspace', () => {
     await waitFor(() => expect(screen.getByRole('article', { name: '文档预览' })).toHaveTextContent('Refreshed content'), {
       timeout: 2000,
     })
-    expect(window.scrollTo).toHaveBeenCalledWith(0, 420)
+    expect(window.scrollTo).toHaveBeenCalledWith(0, 800)
+    expect(window.scrollTo).not.toHaveBeenCalledWith(0, 2200)
+  })
+
+  it('follows the bottom after a silent refresh when the reader is already near it', async () => {
+    const metrics = setScrollMetrics(2200, 600)
+    const frames = controlAnimationFrames()
+    let changeListener: (() => void) | undefined
+    let currentTree = tree([agent('agent-a', 'Agent A')])
+    let currentLogs = logs('Before follow', 'agent-a')
+    const bridge = bridgeWith(
+      async () => currentTree,
+      async () => currentLogs,
+      listener => {
+        changeListener = listener
+        return () => { changeListener = undefined }
+      },
+    )
+    renderWorkspace(bridge.bridge)
+    await previewHas('Before follow')
+    act(() => frames.flush())
+    metrics.setY(1600)
+    vi.mocked(window.scrollTo).mockClear()
+    currentTree = tree([agent('agent-a', 'Agent A', '2026-11-26T10:02:00.000Z')], '2026-11-26T10:02:00.000Z')
+    currentLogs = logs('After follow', 'agent-a')
+    act(() => changeListener?.())
+    await previewHas('After follow')
+    expect(window.scrollTo).toHaveBeenLastCalledWith(0, 2200)
+    act(() => frames.flush())
+    expect(window.scrollTo).toHaveBeenLastCalledWith(0, 2200)
   })
 
   it('keeps rendered content and reports an error when a silent refresh fails', async () => {
@@ -305,6 +404,39 @@ describe('PaseoWorkspace', () => {
     expect(screen.getByRole('button', { name: '切换消息顺序' })).toHaveTextContent('最新在前')
     const [oldest, latest] = previewOrder()
     expect(latest).toBeLessThan(oldest)
+  })
+
+  it('scrolls to the top for newest-first and back to the bottom for ascending order', async () => {
+    setScrollMetrics(2200, 600)
+    const frames = controlAnimationFrames()
+    const bridge = bridgeWith(
+      async () => tree([agent('agent-a', 'Agent A')]),
+      async () => ({
+        agentId: 'agent-a',
+        items: [
+          { type: 'user_message', text: '第一轮' },
+          { type: 'assistant_message', text: '第一轮回答' },
+          { type: 'user_message', text: '第二轮' },
+          { type: 'assistant_message', text: '第二轮回答' },
+        ],
+      }),
+    )
+    const user = userEvent.setup()
+    renderWorkspace(bridge.bridge)
+    await previewHas('第二轮回答')
+    expect(window.scrollTo).toHaveBeenLastCalledWith(0, 2200)
+
+    const toggle = screen.getByRole('button', { name: '切换消息顺序' })
+    await user.click(toggle)
+    expect(toggle).toHaveTextContent('最新在前')
+    expect(window.scrollTo).toHaveBeenLastCalledWith(0, 0)
+    expect(window.cancelAnimationFrame).toHaveBeenCalled()
+
+    await user.click(toggle)
+    expect(toggle).toHaveTextContent('正序')
+    expect(window.scrollTo).toHaveBeenLastCalledWith(0, 2200)
+    act(() => frames.flush())
+    expect(window.scrollTo).toHaveBeenLastCalledWith(0, 2200)
   })
 
   it('surfaces a concise provider error instead of the Electron IPC wrapper', async () => {
