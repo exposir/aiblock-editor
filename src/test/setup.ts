@@ -1,15 +1,7 @@
-import { afterEach, vi } from 'vitest'
-
-const logError = vi.spyOn(console, 'error').mockImplementation((...args) => {
-  if (String(args[0]).includes('Not implemented: HTMLFormElement.prototype.requestSubmit')) return
-  process.stderr.write(`${args.map(String).join(' ')}\n`)
-})
-
-afterEach(() => {
-  logError.mockClear()
-})
+import { afterEach } from 'vitest'
 
 if (typeof document !== 'undefined' && typeof window !== 'undefined') {
+  const polyfilledSubmitEvents = new WeakSet<Event>()
   const [{ cleanup }] = await Promise.all([
     import('@testing-library/react'),
     import('@testing-library/jest-dom/vitest'),
@@ -48,6 +40,38 @@ if (typeof document !== 'undefined' && typeof window !== 'undefined') {
       this.dispatchEvent(new Event('close'))
     }
   }
+
+  Object.defineProperty(HTMLFormElement.prototype, 'requestSubmit', {
+    configurable: true,
+    writable: true,
+    value(submitter: HTMLElement | null = null) {
+      if (submitter && !(submitter instanceof HTMLButtonElement || submitter instanceof HTMLInputElement)) {
+        throw new TypeError('requestSubmit submitter must belong to the form and be a submit button')
+      }
+      const isSubmitButton = submitter instanceof HTMLButtonElement
+        ? submitter.type === 'submit'
+        : submitter instanceof HTMLInputElement && (submitter.type === 'submit' || submitter.type === 'image')
+      if (submitter && (submitter.form !== this || !isSubmitButton)) {
+        throw new TypeError('requestSubmit submitter must belong to the form and be a submit button')
+      }
+      if (!this.noValidate && !this.checkValidity()) return
+      let event: Event
+      if (typeof SubmitEvent === 'function') {
+        event = new SubmitEvent('submit', { bubbles: true, cancelable: true, submitter })
+      } else {
+        event = new Event('submit', { bubbles: true, cancelable: true })
+        Object.defineProperty(event, 'submitter', { value: submitter })
+      }
+      polyfilledSubmitEvents.add(event)
+      this.dispatchEvent(event)
+    },
+  })
+
+  // Submit-button clicks still enter jsdom's internal requestSubmit path.
+  // Cancel that native-only fallback while leaving our polyfilled event untouched.
+  window.addEventListener('submit', event => {
+    if (!polyfilledSubmitEvents.has(event)) event.preventDefault()
+  })
 
   if (!window.matchMedia) {
     window.matchMedia = query => ({

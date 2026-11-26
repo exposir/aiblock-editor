@@ -62,6 +62,38 @@ describe('Mermaid rendering', () => {
     expect(library.render.mock.calls.length - before).toBe(2)
   })
 
+  it('reuse: caches diagrams above the legacy 160KB limit', async () => {
+    vi.resetModules()
+    const { renderMermaid: freshRenderMermaid } = await import('./mermaid')
+    library.render.mockReset()
+    const svg = `<svg>${'x'.repeat(180_000)}</svg>`
+    library.render.mockResolvedValue({ svg })
+    const before = library.render.mock.calls.length
+    const source = 'flowchart TD\nA-->LargeDiagramCache'
+    expect(await freshRenderMermaid(source, false)).toEqual({ svg })
+    expect(await freshRenderMermaid(source, false)).toEqual({ svg })
+    expect(library.render.mock.calls.length - before).toBe(1)
+  })
+
+  it('reuse: evicts the least recently used diagram when the total byte budget is exceeded', async () => {
+    vi.resetModules()
+    const { renderMermaid: freshRenderMermaid } = await import('./mermaid')
+    library.render.mockReset()
+    const svg = `<svg>${'x'.repeat(450_000)}</svg>`
+    library.render.mockResolvedValue({ svg })
+    const source = (index: number) => `flowchart TD\nA-->Budget${index}`
+    const before = library.render.mock.calls.length
+    for (let index = 0; index < 18; index++) await freshRenderMermaid(source(index), false)
+    expect(library.render.mock.calls.length - before).toBe(18)
+    await freshRenderMermaid(source(0), false)
+    await freshRenderMermaid(source(18), false)
+    expect(library.render.mock.calls.length - before).toBe(19)
+    await freshRenderMermaid(source(0), false)
+    expect(library.render.mock.calls.length - before).toBe(19)
+    await freshRenderMermaid(source(1), false)
+    expect(library.render.mock.calls.length - before).toBe(20)
+  })
+
   it('reuse: obsolete previews can leave the queue without drawing', async () => {
     const before = library.render.mock.calls.length
     expect(await renderMermaid('flowchart TD\nA-->NotVisible', false, () => false)).toBeNull()

@@ -112,6 +112,17 @@ const content: JSONContent = {
 }
 
 describe('DocumentPreview', () => {
+  it('keeps empty paragraphs at their editor height with a trailing break', () => {
+    const { container } = render(<DocumentPreview content={{
+      type: 'doc',
+      content: [{ type: 'paragraph', attrs: { blockId: 'empty', blockBg: 'gray' } }],
+    }} />)
+    const paragraph = container.querySelector('p')
+    expect(paragraph).toHaveAttribute('data-block-id', 'empty')
+    expect(paragraph).toHaveAttribute('data-block-bg', 'gray')
+    expect(paragraph?.querySelector('br')).toBeInTheDocument()
+  })
+
   it('renders every schema node and mark without editable ProseMirror state', async () => {
     const mutable = structuredClone(content)
     const copy = vi.fn().mockResolvedValue(undefined)

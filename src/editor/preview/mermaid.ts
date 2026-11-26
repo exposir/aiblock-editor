@@ -54,9 +54,16 @@ export function mermaidConfig(dark: boolean): MermaidConfig {
 
 let queue = Promise.resolve()
 let diagramId = 0
-const cache = new Map<string, DiagramResult>()
+interface DiagramCacheEntry {
+  readonly diagram: DiagramResult
+  readonly bytes: number
+}
+
+const cache = new Map<string, DiagramCacheEntry>()
 const maxCacheEntries = 64
-const maxCachedDiagramLength = 160_000
+const maxCachedDiagramLength = 512_000
+const maxCacheBytes = 8 * 1024 * 1024
+let cacheBytes = 0
 let yieldBeforeRender = false
 
 export interface DiagramResult {
@@ -65,22 +72,45 @@ export interface DiagramResult {
 
 const yieldToBrowser = () => new Promise<void>(resolve => setTimeout(resolve, 0))
 
+function cachedDiagram(key: string): DiagramResult | undefined {
+  const entry = cache.get(key)
+  if (!entry) return undefined
+  cache.delete(key)
+  cache.set(key, entry)
+  return entry.diagram
+}
+
+function rememberDiagram(key: string, diagram: DiagramResult) {
+  const bytes = key.length + diagram.svg.length
+  if (bytes > maxCachedDiagramLength) return
+  const previous = cache.get(key)
+  if (previous) {
+    cache.delete(key)
+    cacheBytes -= previous.bytes
+  }
+  cache.set(key, { diagram, bytes })
+  cacheBytes += bytes
+  while (cache.size > maxCacheEntries || cacheBytes > maxCacheBytes) {
+    const oldestKey = cache.keys().next().value
+    if (!oldestKey) break
+    const oldest = cache.get(oldestKey)
+    cache.delete(oldestKey)
+    if (oldest) cacheBytes -= oldest.bytes
+  }
+}
+
 export function renderMermaid(source: string, dark: boolean, wanted = () => true): Promise<DiagramResult | null> {
   const key = `${dark ? 'dark' : 'light'}\n${source}`
-  const cached = cache.get(key)
-  if (cached) {
-    cache.delete(key)
-    cache.set(key, cached)
-    return Promise.resolve(cached)
-  }
+  const cached = cachedDiagram(key)
+  if (cached) return Promise.resolve(cached)
   const result = queue.then(async () => {
-    const alreadyRendered = cache.get(key)
+    const alreadyRendered = cachedDiagram(key)
     if (alreadyRendered) return alreadyRendered
     if (yieldBeforeRender) {
       yieldBeforeRender = false
       await yieldToBrowser()
     }
-    const renderedWhileWaiting = cache.get(key)
+    const renderedWhileWaiting = cachedDiagram(key)
     if (renderedWhileWaiting) return renderedWhileWaiting
     if (!wanted() || !source.trim()) return null
     try {
@@ -90,10 +120,7 @@ export function renderMermaid(source: string, dark: boolean, wanted = () => true
       mermaid.initialize(mermaidConfig(dark))
       const { svg } = await mermaid.render(`aiblock-diagram-${++diagramId}`, source)
       const diagram = { svg }
-      if (key.length + svg.length <= maxCachedDiagramLength) {
-        cache.set(key, diagram)
-        if (cache.size > maxCacheEntries) cache.delete(cache.keys().next().value!)
-      }
+      rememberDiagram(key, diagram)
       yieldBeforeRender = true
       return diagram
     } catch {

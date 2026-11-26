@@ -259,7 +259,9 @@ function NodeView({ node, context }: { readonly node: JsonNode; readonly context
   switch (node.type) {
     case 'doc': return <Nodes nodes={node.content} context={context} />
     case 'text': return <InlineNode node={node} context={context} />
-    case 'paragraph': return <p {...blockAttributes(node, '')}><Nodes nodes={node.content} context={context} /></p>
+    case 'paragraph': return <p {...blockAttributes(node, '')}>
+      {node.content?.length ? <Nodes nodes={node.content} context={context} /> : <br />}
+    </p>
     case 'heading': {
       const level = Math.min(6, Math.max(1, Number(node.attrs?.level) || 1))
       const Tag = `h${level}` as ElementType
