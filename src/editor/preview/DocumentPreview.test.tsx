@@ -152,6 +152,11 @@ describe('DocumentPreview', () => {
     expect(screen.getByRole('button', { name: '收起折叠内容' })).toHaveAttribute('aria-expanded', 'true')
     expect(structuredClone(mutable)).toEqual(content)
 
+    const onComment = vi.fn()
+    const { container: commentContainer } = render(<DocumentPreview content={mutable} onComment={onComment} />)
+    fireEvent.click(commentContainer.querySelector('[data-comment-id="thread-1"]')!)
+    expect(onComment).toHaveBeenCalledWith('thread-1')
+
     const codeBlock = container.querySelector<HTMLElement>('.preview-code-block')!
     await waitFor(() => expect(codeBlock.querySelector('.hljs-keyword')).toBeInTheDocument())
     fireEvent.click(within(codeBlock).getByRole('button', { name: '复制代码' }))

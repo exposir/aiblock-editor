@@ -186,7 +186,7 @@ function Workspace({ workspace, anchor, saveFailed, loadFailed, retry, change, r
   const modeSwitchScroll = useRef<number | null>(null)
   const [navigationOpen, setNavigationOpen] = useState(wideViewport)
   const [navigationView, setNavigationView] = useState<NavigationView>('pages')
-  const [commentsOpen, setCommentsOpen] = useState(wideViewport)
+  const [commentsOpen, setCommentsOpen] = useState(false)
   const [toolsOpen, setToolsOpen] = useState(false)
   const [copiedPageId, setCopiedPageId] = useState<string | null>(null)
   const [notice, setNotice] = useState('')

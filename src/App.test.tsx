@@ -152,7 +152,9 @@ describe('App 多页面集成', () => {
     await user.click(within(outline).getByRole('button', { name: '发布安排' }))
     expect(scrollIntoView).toHaveBeenCalled()
 
-    const comments = screen.getByRole('complementary', { name: '评论' })
+    await user.click(document.querySelector<HTMLElement>('[data-comment-id="demo-pilot-scope"]')!)
+    const comments = await screen.findByRole('complementary', { name: '评论' })
+    expect(screen.getByRole('button', { name: '评论侧栏' })).toHaveAttribute('aria-expanded', 'true')
     expect(within(comments).queryByRole('textbox')).not.toBeInTheDocument()
     expect(within(comments).queryByRole('button', { name: '解决评论' })).not.toBeInTheDocument()
     expect(within(comments).queryByRole('button', { name: '删除评论' })).not.toBeInTheDocument()
@@ -271,10 +273,15 @@ describe('App 多页面集成', () => {
     expect(screen.getByRole('navigation', { name: '文档章节' })).toBeInTheDocument()
     await user.click(screen.getByRole('button', { name: '页面侧栏' }))
     expect(screen.getByRole('navigation', { name: '页面树' })).toBeInTheDocument()
-    await user.click(screen.getByRole('button', { name: '评论侧栏' }))
+    const commentsToggle = screen.getByRole('button', { name: '评论侧栏' })
+    expect(commentsToggle).toHaveAttribute('aria-expanded', 'false')
     expect(screen.queryByRole('complementary', { name: '评论' })).not.toBeInTheDocument()
-    await user.click(screen.getByRole('button', { name: '评论侧栏' }))
+    await user.click(commentsToggle)
+    expect(commentsToggle).toHaveAttribute('aria-expanded', 'true')
     expect(screen.getByRole('complementary', { name: '评论' })).toBeInTheDocument()
+    await user.click(commentsToggle)
+    expect(commentsToggle).toHaveAttribute('aria-expanded', 'false')
+    expect(screen.queryByRole('complementary', { name: '评论' })).not.toBeInTheDocument()
   })
 
   it('shell: 父页面包屑跳转；子页编辑标题并双向同步页面树', async () => {
@@ -306,6 +313,7 @@ describe('App 多页面集成', () => {
     await waitFor(() => expect(screen.getByRole('textbox', { name: '文档正文' })).not.toHaveTextContent('A 页新增文本'))
     await user.click(screen.getByRole('button', { name: '文档协作与发布手册' }))
     await waitFor(() => expect(screen.getByRole('textbox', { name: '文档正文' })).toHaveTextContent('A 页新增文本'))
+    await user.click(screen.getByRole('button', { name: '评论侧栏' }))
     expect(screen.getByText('建议周四先开放给设计和运营团队，周五统一汇总反馈。')).toBeInTheDocument()
     expect(screen.queryByText('设计团队已核对。')).not.toBeInTheDocument()
   })
@@ -418,6 +426,12 @@ describe('App 多页面集成', () => {
   })
 
   it('从未打开的页面可以导出 Markdown 和创建完整副本', async () => {
+    const originalScroll = Object.getOwnPropertyDescriptor(HTMLElement.prototype, 'scrollIntoView')
+    Object.defineProperty(HTMLElement.prototype, 'scrollIntoView', { configurable: true, value: vi.fn() })
+    onTestFinished(() => {
+      if (originalScroll) Object.defineProperty(HTMLElement.prototype, 'scrollIntoView', originalScroll)
+      else Reflect.deleteProperty(HTMLElement.prototype, 'scrollIntoView')
+    })
     const demo = createDemoWorkspace(schema)
     localStorage.setItem(WORKSPACE_STORAGE_KEY, JSON.stringify(demo))
     const user = await mountApp()
@@ -435,7 +449,11 @@ describe('App 多页面集成', () => {
     expect(await screen.findByRole('button', { name: `${name}（副本）` })).toHaveAttribute('aria-current', 'page')
     const editor = screen.getByRole('textbox', { name: '文档正文' })
     expect(editor.querySelector('[data-type="taskList"]')).not.toBeNull()
-    expect(screen.getByRole('complementary', { name: '评论' })).toHaveTextContent('设计团队已核对')
+    act(() => {
+      editor.querySelector<HTMLElement>('[data-comment-id="pilot-access"]')!
+        .dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: false }))
+    })
+    expect(await screen.findByRole('complementary', { name: '评论' })).toHaveTextContent('设计团队已核对')
     expect(screen.getByRole('button', { name })).not.toHaveAttribute('aria-current')
   })
 

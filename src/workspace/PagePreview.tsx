@@ -23,11 +23,12 @@ function revealPreviewAnchor(root: HTMLElement, selector: string) {
     target = root.querySelector<HTMLElement>(selector)
   }
   const reduced = win.matchMedia('(prefers-reduced-motion: reduce)').matches
-  win.requestAnimationFrame(() => target?.scrollIntoView({ behavior: reduced ? 'auto' : 'smooth', block: 'start' }))
+  win.requestAnimationFrame(() => target?.scrollIntoView?.({ behavior: reduced ? 'auto' : 'smooth', block: 'start' }))
 }
 
 export function PagePreview({ page, anchor, commentsOpen, onCommentsOpen, restoreScrollY = null }: PagePreviewProps) {
   const surface = useRef<HTMLElement>(null)
+  const pendingComment = useRef<string | null>(null)
   const [activeComment, setActiveComment] = useState<string | null>(null)
 
   useLayoutEffect(() => {
@@ -40,16 +41,30 @@ export function PagePreview({ page, anchor, commentsOpen, onCommentsOpen, restor
   }, [anchor, page.id])
 
   function locateComment(thread: CommentThread) {
-    if (!surface.current || thread.resolved) return
+    if (!surface.current) return
     setActiveComment(thread.id)
+    onCommentsOpen(true)
+    pendingComment.current = thread.id
     revealPreviewAnchor(surface.current, `[data-comment-id="${CSS.escape(thread.id)}"]`)
   }
+
+  function openComment(id: string) {
+    const thread = page.comments.find(thread => thread.id === id)
+    if (thread) locateComment(thread)
+  }
+
+  useEffect(() => {
+    if (!commentsOpen || !pendingComment.current || !surface.current) return
+    const id = pendingComment.current
+    pendingComment.current = null
+    revealPreviewAnchor(surface.current, `[data-comment-id="${CSS.escape(id)}"]`)
+  }, [commentsOpen])
 
   return <>
     <main ref={surface} className="document-surface preview-surface" data-document-surface="" data-preview="true"
       onDragOver={event => { if (event.dataTransfer?.types.includes('Files')) event.preventDefault() }}
       onDrop={event => { if (event.dataTransfer?.types.includes('Files')) event.preventDefault() }}>
-      <DocumentPreview content={page.content} activeComment={activeComment} />
+      <DocumentPreview content={page.content} activeComment={activeComment} onComment={openComment} />
     </main>
     {commentsOpen && <CommentSidebar threads={page.comments} active={activeComment} onLocate={locateComment}
       onReply={() => {}} onResolve={() => {}} onDelete={() => {}} onClose={() => onCommentsOpen(false)} readOnly />}

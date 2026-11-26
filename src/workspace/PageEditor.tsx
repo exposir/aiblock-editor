@@ -138,8 +138,9 @@ export function PageEditor({ page, extensions, anchor, commentsOpen, onCommentsO
   }
 
   function locateComment(thread: CommentThread) {
-    if (!editor || thread.resolved) return
+    if (!editor) return
     setActiveComment(thread.id)
+    onCommentsOpen(true)
     editor.commands.setActiveComment(thread.id)
     const pos = commentAnchor(editor.state.doc, thread.id)
     cancelCommentReveal.current?.()
@@ -161,9 +162,16 @@ export function PageEditor({ page, extensions, anchor, commentsOpen, onCommentsO
       : current.comments.filter(thread => thread.id !== id) }))
   }
 
+  function locateCommentMark(event: React.MouseEvent<HTMLElement>) {
+    if (!(event.target instanceof Element)) return
+    const id = event.target.closest<HTMLElement>('[data-comment-id]')?.dataset.commentId
+    const thread = id ? page.comments.find(thread => thread.id === id) : undefined
+    if (thread) locateComment(thread)
+  }
+
   return (
     <>
-      <main ref={surface} className="document-surface" data-document-surface=""
+      <main ref={surface} className="document-surface" data-document-surface="" onClick={locateCommentMark}
         data-dragging-md={dragDepth > 0 ? 'true' : undefined}
         onDragEnter={event => {
           if (hasFilePayload(event.dataTransfer)) setDragDepth(depth => depth + 1)

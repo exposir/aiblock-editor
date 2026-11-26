@@ -1,7 +1,7 @@
 import { Editor } from '@tiptap/core'
 import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, onTestFinished, vi } from 'vitest'
 import { useState } from 'react'
 import App from '../App'
 import { createEditorExtensions } from '../editor/extensions'
@@ -155,6 +155,24 @@ describe('PageEditor comments', () => {
     await userEvent.setup().click(within(sidebar).getByRole('button', { name: '删除评论' }))
     await waitFor(() => expect(within(sidebar).queryByText('Beta')).not.toBeInTheDocument())
     expect(within(sidebar).getByText('选中文字后可发表评论')).toBeInTheDocument()
+  })
+
+  it('click mark: 正文评论高亮自动打开侧栏并激活对应线程', async () => {
+    const page = makePage({
+      id: '33333333-3333-4333-8333-333333333333', title: '正文评论', content: textDoc('Gamma', { commentId: 'c1' }),
+      comments: [thread],
+    })
+    const { editor } = mount({ initial: [page], startCommentsOpen: false })
+    await waitFor(() => expect(editor()).toBeTruthy())
+    expect(screen.queryByRole('complementary', { name: '评论' })).not.toBeInTheDocument()
+    const scrollIntoView = vi.spyOn(HTMLElement.prototype, 'scrollIntoView').mockImplementation(() => {})
+    onTestFinished(() => scrollIntoView.mockRestore())
+    await act(async () => {
+      editor().view.dom.querySelector<HTMLElement>('[data-comment-id="c1"]')!
+        .dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: false }))
+    })
+    const sidebar = await screen.findByRole('complementary', { name: '评论' })
+    expect(within(sidebar).getByText('Beta').closest('.comment-thread')).toHaveAttribute('data-active', 'true')
   })
 })
 

@@ -574,9 +574,10 @@ async function copyPreviewCode(button: HTMLButtonElement, timer: { current?: Ret
   }, 1400)
 }
 
-export function DocumentPreview({ content, activeComment = null }: {
+export function DocumentPreview({ content, activeComment = null, onComment }: {
   readonly content: JSONContent
   readonly activeComment?: string | null
+  readonly onComment?: (id: string) => void
 }) {
   const root = useRef<HTMLElement>(null)
   const copyTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined)
@@ -590,6 +591,11 @@ export function DocumentPreview({ content, activeComment = null }: {
 
   function onClick(event: MouseEvent<HTMLElement>) {
     if (!(event.target instanceof Element)) return
+    const comment = event.target.closest<HTMLElement>('[data-comment-id]')
+    if (comment?.dataset.commentId) {
+      onComment?.(comment.dataset.commentId)
+      return
+    }
     const toggle = event.target.closest<HTMLButtonElement>('.preview-toggle-button')
     if (toggle) {
       togglePreview(toggle)

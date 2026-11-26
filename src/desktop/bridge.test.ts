@@ -333,6 +333,8 @@ describe('desktop workspace in App', () => {
     native.command('toggle-pages')
     expect(screen.getByRole('navigation', { name: '页面树' })).toBeInTheDocument()
     native.command('toggle-comments')
+    expect(screen.getByRole('complementary', { name: '评论' })).toBeInTheDocument()
+    native.command('toggle-comments')
     expect(screen.queryByRole('complementary', { name: '评论' })).not.toBeInTheDocument()
 
     native.command('new-page')
