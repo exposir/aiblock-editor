@@ -159,6 +159,7 @@ describe('DocumentPreview', () => {
     expect(within(codeBlock).getByRole('button', { name: '已复制代码' })).toBeInTheDocument()
 
     const rich = container.querySelector<HTMLElement>('[data-preview-language="mermaid"]')!
+    expect(within(codeBlock).getByText('TypeScript')).toBeInTheDocument()
     fireEvent.click(within(rich).getByRole('button', { name: '源码' }))
     expect(rich).toHaveAttribute('data-view-mode', 'code')
     expect(rich.querySelector<HTMLElement>('pre[data-code-source]')).toBeVisible()

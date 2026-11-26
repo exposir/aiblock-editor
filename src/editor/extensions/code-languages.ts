@@ -5,6 +5,12 @@ export const CODE_LANGUAGES = [
 
 export type CodeLanguage = (typeof CODE_LANGUAGES)[number]
 
+export const codeLanguageLabels: Record<CodeLanguage, string> = {
+  plaintext: '纯文本', typescript: 'TypeScript', javascript: 'JavaScript', python: 'Python',
+  rust: 'Rust', go: 'Go', sql: 'SQL', json: 'JSON', bash: 'Bash', css: 'CSS', html: 'HTML', markdown: 'Markdown',
+  mermaid: 'Mermaid', math: 'LaTeX',
+}
+
 const aliases: Record<string, CodeLanguage> = {
   text: 'plaintext', plain: 'plaintext', ts: 'typescript', js: 'javascript', py: 'python',
   rs: 'rust', sh: 'bash', shell: 'bash', xml: 'html', md: 'markdown',

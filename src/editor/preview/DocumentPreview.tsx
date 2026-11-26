@@ -3,7 +3,7 @@ import { Check, ChevronRight, Copy } from 'lucide-react'
 import { startTransition, useLayoutEffect, useReducer, useRef } from 'react'
 import type { CSSProperties, ElementType, MouseEvent, ReactNode } from 'react'
 import { normalizeColumnWidths } from '../extensions/column-widths'
-import { codeLanguage, isPreviewLanguage } from '../extensions/code-languages'
+import { codeLanguage, codeLanguageLabels, isPreviewLanguage } from '../extensions/code-languages'
 import { highlightCode } from '../extensions/code-syntax'
 import type { CodeToken } from '../extensions/code-syntax'
 import { codeHighlightWorker } from '../extensions/long-code-highlight'
@@ -22,7 +22,7 @@ interface RenderContext {
   readonly activeComment: string | null
 }
 
-const previewChunkSize = 24
+const previewChunkSize = 128
 const cacheLimit = 256
 const codeCache = new Map<string, readonly CodeToken[]>()
 const mathCache = new Map<string, string | null>()
@@ -77,7 +77,9 @@ function PreviewChunks({ nodes, context }: { readonly nodes: readonly JSONConten
     chunks.push(nodes.slice(index, index + previewChunkSize))
   }
   return <>{chunks.map((chunk, index) =>
-    <div className="preview-chunk" data-preview-chunk="" key={index}><Nodes nodes={chunk} context={context} /></div>,
+    <div className={`preview-chunk${index === 0 ? ' preview-chunk-leading' : ''}`} data-preview-chunk="" key={index}>
+      <Nodes nodes={chunk} context={context} />
+    </div>,
   )}</>
 }
 
@@ -171,7 +173,7 @@ function PreviewCodeBlock({ node }: { readonly node: JsonNode }) {
   const source = textContent(node)
   const cached = cacheGet(codeCache, `${language}\0${source}`)
   return <div {...blockAttributes(node, 'preview-code-block')}>
-    <div className="preview-code-toolbar"><span>{language}</span><CopyButton /></div>
+    <div className="preview-code-toolbar"><span>{codeLanguageLabels[language]}</span><CopyButton /></div>
     <pre data-preview-code="" data-language={language} data-wrap={node.attrs?.wrap === true ? 'true' : undefined}>
       <code>{highlightedCode(source, cached ?? null)}</code>
     </pre>
@@ -285,6 +287,7 @@ function NodeView({ node, context }: { readonly node: JsonNode; readonly context
       return <aside {...blockAttributes(node, 'callout')} data-callout="" data-theme={theme} data-icon={icon}>
         <span className="callout-icon" aria-hidden="true">{icon}</span>
         <div className="callout-content"><Nodes nodes={node.content} context={context} /></div>
+        <span className="preview-callout-slot" aria-hidden="true" />
       </aside>
     }
     case 'toggle': return <PreviewToggle node={node} context={context} />
@@ -330,6 +333,7 @@ function attachLazyPreviews(root: HTMLElement) {
   let running = false
   let disposed = false
   let scrollingUntil = 0
+  let frame = 0
   const worker = codeHighlightWorker()
   type IdleWindow = Window & {
     requestIdleCallback?: (callback: () => void, options?: { timeout: number }) => number
@@ -343,6 +347,11 @@ function attachLazyPreviews(root: HTMLElement) {
       idleId = undefined
       timer = undefined
       if (disposed || running) return
+      const now = performance.now()
+      if (frame && now < frame) {
+        timer = win!.setTimeout(run, Math.min(120, frame - now))
+        return
+      }
       const scrollWait = scrollingUntil - performance.now()
       if (scrollWait > 0) {
         timer = win!.setTimeout(run, Math.min(120, scrollWait))
@@ -395,6 +404,7 @@ function attachLazyPreviews(root: HTMLElement) {
             })()
       void work.finally(() => {
         running = false
+        frame = performance.now() + 16
         schedule()
       })
     }
@@ -489,7 +499,8 @@ function attachLazyPreviews(root: HTMLElement) {
   }
 
   const followScroll = () => {
-    scrollingUntil = performance.now() + 180
+    scrollingUntil = performance.now() + 280
+    frame = performance.now() + 16
     schedule()
   }
   win.addEventListener('scroll', followScroll, { passive: true })

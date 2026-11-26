@@ -5,8 +5,8 @@ import { Copy, Download, WrapText } from 'lucide-react'
 import { useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
 import { saveDocumentFile, suggestedFileName } from '../../desktop/bridge'
-import { CODE_LANGUAGES, codeLanguage, isPreviewLanguage, viewModeFor } from '../extensions/code-languages'
-import type { CodeLanguage, CodeViewMode } from '../extensions/code-languages'
+import { CODE_LANGUAGES, codeLanguage, codeLanguageLabels, isPreviewLanguage, viewModeFor } from '../extensions/code-languages'
+import type { CodeViewMode } from '../extensions/code-languages'
 import { changedNodes, createNodeIndex } from '../extensions/document-changes'
 import { downloadBlob } from '../markdown/markdown-files'
 import { isDark } from '../preview/code-preview'
@@ -17,12 +17,6 @@ import { useEditorSelector, useOverlayRect } from './editor-ui'
 import type { OverlayRect } from './overlay-geometry'
 import { nearbyOverlayRect } from './overlay-layout'
 import { observeViewport } from './viewport'
-
-const names: Record<CodeLanguage, string> = {
-  plaintext: '纯文本', typescript: 'TypeScript', javascript: 'JavaScript', python: 'Python',
-  rust: 'Rust', go: 'Go', sql: 'SQL', json: 'JSON', bash: 'Bash', css: 'CSS', html: 'HTML', markdown: 'Markdown',
-  mermaid: 'Mermaid', math: 'LaTeX',
-}
 
 const views: readonly [CodeViewMode, string][] = [
   ['preview', '预览'], ['split', '分栏'], ['code', '源码'],
@@ -143,7 +137,7 @@ function CodeControls({ editor, host, node, pos, anchor, onFocus, initial }: {
         visibility: visible ? 'visible' : 'hidden' } : undefined}>
       <select aria-label="代码语言" value={language}
         onChange={event => changeLanguage(event.target.value)}>
-        {CODE_LANGUAGES.map(language => <option key={language} value={language}>{names[language]}</option>)}
+        {CODE_LANGUAGES.map(language => <option key={language} value={language}>{codeLanguageLabels[language]}</option>)}
       </select>
       {previewLanguage && <div className="code-view-modes" role="group" aria-label="代码块视图">
         {views.map(([value, label]) => <button type="button" key={value} aria-pressed={mode === value}

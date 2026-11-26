@@ -516,8 +516,10 @@ function Workspace({ workspace, anchor, saveFailed, loadFailed, retry, change, r
                 event.target.value = ''
               }} />
           </div>
-          {documentMode === 'edit' && <button type="button" className="icon-control" aria-label="重置示例工作区" title="重置示例工作区"
-            onClick={() => setDialog({ kind: 'reset' })}><RotateCcw size={17} aria-hidden="true" /></button>}
+          <button type="button" className={`icon-control${documentMode === 'preview' ? ' header-slot-hidden' : ''}`}
+            aria-label="重置示例工作区" title="重置示例工作区" aria-hidden={documentMode === 'preview' || undefined}
+            tabIndex={documentMode === 'preview' ? -1 : undefined} disabled={documentMode === 'preview'}
+            onClick={() => setDialog({ kind: 'reset' })}><RotateCcw size={17} aria-hidden="true" /></button>
         </div>
       </header>
       <div className="workspace" data-navigation={navigationOpen} data-comments={commentsOpen}>

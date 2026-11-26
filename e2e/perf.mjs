@@ -481,7 +481,7 @@ async function xlSample() {
   assert.equal(previewScroll.writes, 0, 'XL preview scroll must not write styles')
   assert.deepEqual({ ...previewDom, chunks: undefined },
     { article: 1, proseMirror: 0, contentEditable: 0, textboxes: 0, overlays: 0, chunks: undefined })
-  assert.ok(previewDom.chunks >= Math.ceil(shape.blocks / 24))
+  assert.ok(previewDom.chunks >= Math.ceil(shape.blocks / 128))
   const summary = { edit, preview }
   if (process.argv.includes('--geometry-only')) return summary
   const codeOpenMs = (await seedAndOpen('code', 'edit')).ms

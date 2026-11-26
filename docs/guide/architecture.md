@@ -45,7 +45,7 @@ Web 使用 IndexedDB 的 `meta`、`pages` 和 `assets`。桌面端使用 `index.
 
 ## 零 ProseMirror 静态预览
 
-`src/workspace/PagePreview.tsx` 在预览模式替代 `PageEditor`。正文由 `src/editor/preview/DocumentPreview.tsx` 直接按 JSON 节点和 Mark 生成 React DOM，不挂载 EditorView、contentEditable 或编辑浮层。预览页把顶层块每 24 个包入一个 `.preview-chunk`，通过 `content-visibility: auto` 与固有高度跳过离屏布局。
+`src/workspace/PagePreview.tsx` 在预览模式替代 `PageEditor`。正文由 `src/editor/preview/DocumentPreview.tsx` 直接按 JSON 节点和 Mark 生成 React DOM，不挂载 EditorView、contentEditable 或编辑浮层。预览页把顶层块每 128 个包入一个 `.preview-chunk`，通过 `content-visibility: auto` 与固有高度跳过离屏布局；首块容器使用 `display: contents`，保持与编辑态相同的 margin 折叠。
 
 折叠、复制、代码源码切换统一由 `.document-preview` 的单个 click 委托处理，不保存逐块 React state。普通代码高亮使用有界 LRU 缓存和空闲帧队列；滚动期间暂停增强任务，避免在输入帧内做语法分析。Mermaid、KaTeX、图片和行内公式共享一个容器级观察器，只在近视口时激活。目录和评论定位直接查询 `[data-block-id]` / `[data-comment-id]`。
 
