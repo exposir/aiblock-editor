@@ -1,4 +1,4 @@
-import { act, render, screen, waitFor, within } from '@testing-library/react'
+import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { getSchema } from '@tiptap/core'
 import { afterEach, beforeEach, describe, expect, it, onTestFinished, vi } from 'vitest'
@@ -62,6 +62,24 @@ function logs(text: string, agentId = 'agent-a'): PaseoAgentLogs {
   }
 }
 
+function longLogs(rounds: number): PaseoAgentLogs {
+  return {
+    agentId: 'agent-a',
+    items: Array.from({ length: rounds }, (_, index) => {
+      const round = index + 1
+      return [
+        { type: 'user_message', text: `Question turn ${round}` },
+        {
+          type: 'assistant_message',
+          text: Array.from({ length: 6 }, (_, paragraph) =>
+            `Answer turn ${round} paragraph ${paragraph + 1}.`,
+          ).join('\n\n'),
+        },
+      ]
+    }).flat(),
+  }
+}
+
 function bridgeWith(
   readTree: () => Promise<PaseoTreeSnapshot>,
   readLogs: (agentId: string, options?: { force?: boolean }) => Promise<PaseoAgentLogs>,
@@ -111,12 +129,13 @@ async function previewHas(text: string) {
 
 function setScrollMetrics(height: number, viewport: number) {
   let y = 0
+  let currentHeight = height
   const documentHeight = Object.getOwnPropertyDescriptor(document.documentElement, 'scrollHeight')
   const bodyHeight = Object.getOwnPropertyDescriptor(document.body, 'scrollHeight')
   const innerHeight = Object.getOwnPropertyDescriptor(window, 'innerHeight')
   const scrollY = Object.getOwnPropertyDescriptor(window, 'scrollY')
-  Object.defineProperty(document.documentElement, 'scrollHeight', { configurable: true, get: () => height })
-  Object.defineProperty(document.body, 'scrollHeight', { configurable: true, get: () => height - 100 })
+  Object.defineProperty(document.documentElement, 'scrollHeight', { configurable: true, get: () => currentHeight })
+  Object.defineProperty(document.body, 'scrollHeight', { configurable: true, get: () => currentHeight - 100 })
   Object.defineProperty(window, 'innerHeight', { configurable: true, get: () => viewport })
   Object.defineProperty(window, 'scrollY', { configurable: true, get: () => y })
   onTestFinished(() => {
@@ -129,7 +148,13 @@ function setScrollMetrics(height: number, viewport: number) {
     restore(window, 'innerHeight', innerHeight)
     restore(window, 'scrollY', scrollY)
   })
-  return { setY: (value: number) => { y = value } }
+  vi.mocked(window.scrollTo).mockImplementation((_x, top) => {
+    y = typeof top === 'number' ? top : 0
+  })
+  return {
+    setY: (value: number) => { y = value },
+    setHeight: (value: number) => { currentHeight = value },
+  }
 }
 
 function controlAnimationFrames() {
@@ -148,6 +173,13 @@ function controlAnimationFrames() {
         callbacks.clear()
         for (const callback of current) callback(performance.now())
       }
+    },
+    flushOne() {
+      const next = callbacks.entries().next()
+      if (next.done) return
+      const [id, callback] = next.value
+      callbacks.delete(id)
+      callback(performance.now())
     },
     pending: () => callbacks.size,
   }
@@ -186,6 +218,91 @@ describe('PaseoWorkspace', () => {
     expect(window.scrollTo).toHaveBeenLastCalledWith(0, 2200)
     act(() => frames.flush())
     expect(window.scrollTo).toHaveBeenLastCalledWith(0, 2200)
+  })
+
+  it('forces the last lazy preview chunk into layout and converges on the true document bottom', async () => {
+    const metrics = setScrollMetrics(13_684, 900)
+    const frames = controlAnimationFrames()
+    const scrollTargets: HTMLElement[] = []
+    let scrollCalls = 0
+    const scrollIntoView = vi.fn(function (this: HTMLElement) {
+      scrollTargets.push(this)
+      scrollCalls++
+      if (scrollCalls === 2) metrics.setHeight(28_000)
+      if (scrollCalls === 3) metrics.setHeight(42_385)
+    })
+    const original = Object.getOwnPropertyDescriptor(HTMLElement.prototype, 'scrollIntoView')
+    Object.defineProperty(HTMLElement.prototype, 'scrollIntoView', {
+      configurable: true,
+      writable: true,
+      value: scrollIntoView,
+    })
+    onTestFinished(() => {
+      if (original) Object.defineProperty(HTMLElement.prototype, 'scrollIntoView', original)
+      else Reflect.deleteProperty(HTMLElement.prototype, 'scrollIntoView')
+    })
+
+    const bridge = bridgeWith(
+      async () => tree([agent('agent-a', 'Agent A')]),
+      async () => longLogs(50),
+    )
+    renderWorkspace(bridge.bridge)
+    await previewHas('Answer turn 50 paragraph 6')
+    const preview = screen.getByRole('article', { name: '文档预览' })
+    const chunks = preview.querySelectorAll('.preview-chunk')
+    expect(chunks).toHaveLength(4)
+    expect(chunks[0]).not.toHaveClass('preview-chunk-leading')
+    const lastChunk = chunks[3]!
+    expect(lastChunk).toHaveClass('preview-chunk-trailing')
+    expect(scrollTargets[0]).toBe(lastChunk.lastElementChild)
+    expect(window.scrollTo).toHaveBeenCalledWith(0, 13_684)
+
+    act(() => frames.flushOne())
+    expect(window.scrollTo).toHaveBeenLastCalledWith(0, 28_000)
+    act(() => frames.flushOne())
+    expect(window.scrollTo).toHaveBeenLastCalledWith(0, 42_385)
+    act(() => frames.flush())
+    expect(window.scrollTo).toHaveBeenLastCalledWith(0, 42_385)
+    expect(frames.pending()).toBe(0)
+  })
+
+  it('eagerly lays out the preceding chunk too when the final Paseo chunk is short, and switches to leading in desc order', async () => {
+    setScrollMetrics(9_600, 900)
+    const user = userEvent.setup()
+    const bridge = bridgeWith(
+      async () => tree([agent('agent-a', 'Agent A')]),
+      async () => longLogs(33),
+    )
+    renderWorkspace(bridge.bridge)
+    await previewHas('Answer turn 33 paragraph 6')
+    const preview = screen.getByRole('article', { name: '文档预览' })
+    const chunks = preview.querySelectorAll('.preview-chunk')
+    expect(chunks).toHaveLength(3)
+    expect(chunks[0]).not.toHaveClass('preview-chunk-trailing')
+    expect(chunks[1]).toHaveClass('preview-chunk-trailing')
+    expect(chunks[2]).toHaveClass('preview-chunk-trailing')
+
+    await user.click(screen.getByRole('button', { name: '切换消息顺序' }))
+    const reversed = preview.querySelectorAll('.preview-chunk')
+    expect(reversed[0]).toHaveClass('preview-chunk-leading')
+    expect(reversed[2]).not.toHaveClass('preview-chunk-trailing')
+  })
+
+  it('stops chasing the bottom as soon as the user scrolls', async () => {
+    setScrollMetrics(13_684, 900)
+    const frames = controlAnimationFrames()
+    const bridge = bridgeWith(
+      async () => tree([agent('agent-a', 'Agent A')]),
+      async () => longLogs(50),
+    )
+    renderWorkspace(bridge.bridge)
+    await previewHas('Question turn 50')
+    expect(frames.pending()).toBe(1)
+    fireEvent.wheel(window, { deltaY: 200 })
+    expect(frames.pending()).toBe(0)
+    vi.mocked(window.scrollTo).mockClear()
+    act(() => frames.flush())
+    expect(window.scrollTo).not.toHaveBeenCalled()
   })
 
   it('ignores a stale agent response after switching quickly to another agent', async () => {

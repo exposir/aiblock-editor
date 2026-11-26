@@ -10,6 +10,7 @@ interface PagePreviewProps {
   readonly commentsOpen: boolean
   readonly onCommentsOpen: (open: boolean) => void
   readonly restoreScrollY?: number | null
+  readonly initialScroll?: 'top' | 'bottom'
 }
 
 function revealPreviewAnchor(root: HTMLElement, selector: string) {
@@ -26,14 +27,19 @@ function revealPreviewAnchor(root: HTMLElement, selector: string) {
   win.requestAnimationFrame(() => target?.scrollIntoView?.({ behavior: reduced ? 'auto' : 'smooth', block: 'start' }))
 }
 
-export function PagePreview({ page, anchor, commentsOpen, onCommentsOpen, restoreScrollY = null }: PagePreviewProps) {
+export function PagePreview({ page, anchor, commentsOpen, onCommentsOpen, restoreScrollY = null, initialScroll = 'top' }: PagePreviewProps) {
   const surface = useRef<HTMLElement>(null)
   const pendingComment = useRef<string | null>(null)
   const [activeComment, setActiveComment] = useState<string | null>(null)
 
   useLayoutEffect(() => {
-    window.scrollTo(0, restoreScrollY ?? 0)
-  }, [page.id, restoreScrollY])
+    if (restoreScrollY !== null) {
+      window.scrollTo(0, restoreScrollY)
+      return
+    }
+    if (initialScroll === 'bottom') return
+    window.scrollTo(0, 0)
+  }, [page.id, restoreScrollY, initialScroll])
 
   useEffect(() => {
     if (!anchor || !surface.current) return
@@ -64,7 +70,7 @@ export function PagePreview({ page, anchor, commentsOpen, onCommentsOpen, restor
     <main ref={surface} className="document-surface preview-surface" data-document-surface="" data-preview="true"
       onDragOver={event => { if (event.dataTransfer?.types.includes('Files')) event.preventDefault() }}
       onDrop={event => { if (event.dataTransfer?.types.includes('Files')) event.preventDefault() }}>
-      <DocumentPreview content={page.content} activeComment={activeComment} onComment={openComment} />
+      <DocumentPreview content={page.content} activeComment={activeComment} onComment={openComment} eagerEdge={initialScroll} />
     </main>
     {commentsOpen && <CommentSidebar threads={page.comments} active={activeComment} onLocate={locateComment}
       onReply={() => {}} onResolve={() => {}} onDelete={() => {}} onClose={() => onCommentsOpen(false)} readOnly />}

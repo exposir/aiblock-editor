@@ -135,6 +135,21 @@ function documentScrollHeight(): number {
 }
 
 type ScrollIntent = { readonly kind: 'top' } | { readonly kind: 'bottom' } | { readonly kind: 'preserve'; readonly y: number }
+interface BottomScrollRun {
+  frame: number | null
+  height: number
+  stableFrames: number
+  frames: number
+}
+
+function scrollToDocumentBottom() {
+  const preview = document.querySelector<HTMLElement>('.document-preview')
+  const chunks = preview?.querySelectorAll<HTMLElement>('.preview-chunk')
+  const lastChunk = chunks?.length ? chunks[chunks.length - 1] : preview
+  const lastBlock = (lastChunk?.lastElementChild ?? preview?.lastElementChild) as HTMLElement | null
+  lastBlock?.scrollIntoView?.({ block: 'end', behavior: 'instant' })
+  window.scrollTo(0, documentScrollHeight())
+}
 
 export function PaseoWorkspace({ bridge, schema, appearance, onSourceChange, onSaveDocument }: PaseoWorkspaceProps) {
   const [tree, setTree] = useState<PaseoTreeSnapshot | null>(null)
@@ -155,7 +170,8 @@ export function PaseoWorkspace({ bridge, schema, appearance, onSourceChange, onS
   const messageOrderRef = useRef(messageOrder)
   const pendingScroll = useRef<{ y: number; nearBottom: boolean } | null>(null)
   const scrollIntent = useRef<ScrollIntent | null>(null)
-  const bottomFrame = useRef<number | null>(null)
+  const bottomScroll = useRef<BottomScrollRun | null>(null)
+  const bottomListeners = useRef<(() => void) | null>(null)
   const refreshTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined)
   const copiedTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined)
   const mounted = useRef(true)
@@ -295,20 +311,71 @@ export function PaseoWorkspace({ bridge, schema, appearance, onSourceChange, onS
   useEffect(() => () => {
     clearTimeout(refreshTimer.current)
     clearTimeout(copiedTimer.current)
-    if (bottomFrame.current !== null) window.cancelAnimationFrame(bottomFrame.current)
+    stopBottomScroll()
   }, [])
 
-  function cancelBottomFrame() {
-    if (bottomFrame.current === null) return
-    window.cancelAnimationFrame(bottomFrame.current)
-    bottomFrame.current = null
+  function stopBottomScroll() {
+    const run = bottomScroll.current
+    if (run?.frame !== null && run?.frame !== undefined) window.cancelAnimationFrame(run.frame)
+    bottomScroll.current = null
+    bottomListeners.current?.()
+    bottomListeners.current = null
+  }
+
+  function startBottomScroll() {
+    stopBottomScroll()
+    scrollToDocumentBottom()
+    const run: BottomScrollRun = {
+      frame: null,
+      height: documentScrollHeight(),
+      stableFrames: 0,
+      frames: 0,
+    }
+    bottomScroll.current = run
+
+    const release = () => stopBottomScroll()
+    const passive = { passive: true }
+    const scrollKeys = new Set(['ArrowUp', 'ArrowDown', 'PageUp', 'PageDown', 'Home', 'End', ' '])
+    const keydown = (event: KeyboardEvent) => {
+      if (scrollKeys.has(event.key)) release()
+    }
+    window.addEventListener('wheel', release, passive)
+    window.addEventListener('touchstart', release, passive)
+    window.addEventListener('pointerdown', release, passive)
+    window.addEventListener('keydown', keydown)
+    bottomListeners.current = () => {
+      window.removeEventListener('wheel', release)
+      window.removeEventListener('touchstart', release)
+      window.removeEventListener('pointerdown', release)
+      window.removeEventListener('keydown', keydown)
+    }
+
+    const step = () => {
+      if (!mounted.current || bottomScroll.current !== run) return
+      run.frame = null
+      scrollToDocumentBottom()
+      const height = documentScrollHeight()
+      const gap = Math.max(0, height - (window.scrollY + window.innerHeight))
+      run.frames++
+      if (height === run.height) run.stableFrames++
+      else {
+        run.height = height
+        run.stableFrames = 0
+      }
+      if (run.frames >= 8 || (run.stableFrames >= 2 && gap <= 2)) {
+        stopBottomScroll()
+        return
+      }
+      run.frame = window.requestAnimationFrame(step)
+    }
+    run.frame = window.requestAnimationFrame(step)
   }
 
   useLayoutEffect(() => {
     const intent = scrollIntent.current
     if (!intent) return
     scrollIntent.current = null
-    cancelBottomFrame()
+    stopBottomScroll()
     if (intent.kind === 'preserve') {
       window.scrollTo(0, intent.y)
       return
@@ -317,11 +384,7 @@ export function PaseoWorkspace({ bridge, schema, appearance, onSourceChange, onS
       window.scrollTo(0, 0)
       return
     }
-    window.scrollTo(0, documentScrollHeight())
-    bottomFrame.current = window.requestAnimationFrame(() => {
-      bottomFrame.current = null
-      if (mounted.current) window.scrollTo(0, documentScrollHeight())
-    })
+    startBottomScroll()
   }, [logs, messageOrder])
 
   function selectAgent(id: string) {
@@ -447,7 +510,8 @@ export function PaseoWorkspace({ bridge, schema, appearance, onSourceChange, onS
             </main>
           : page
             ? <PagePreview key={`paseo-${agent!.id}`} page={page} anchor={null} commentsOpen={false}
-                onCommentsOpen={() => {}} restoreScrollY={null} />
+                onCommentsOpen={() => {}} restoreScrollY={null}
+                initialScroll={messageOrder === 'asc' ? 'bottom' : 'top'} />
             : <main className="document-surface paseo-load">
                 <div className="workspace-load" role="status">Paseo 中没有可预览的活动窗口。</div>
               </main>}

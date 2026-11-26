@@ -71,13 +71,24 @@ function Nodes({ nodes, context }: { readonly nodes?: readonly JSONContent[]; re
   return <>{nodes?.map((node, index) => <NodeView key={`${node.type ?? 'node'}-${index}`} node={node} context={context} />)}</>
 }
 
-function PreviewChunks({ nodes, context }: { readonly nodes: readonly JSONContent[]; readonly context: RenderContext }) {
+function previewChunkClass(chunks: readonly (readonly JSONContent[])[], index: number, eagerEdge: 'top' | 'bottom'): string {
+  if (eagerEdge === 'top') return index === 0 ? 'preview-chunk preview-chunk-leading' : 'preview-chunk'
+  const last = chunks.length - 1
+  const trailing = index === last || (index === last - 1 && (chunks[last]?.length ?? 0) < previewChunkSize / 2)
+  return trailing ? 'preview-chunk preview-chunk-trailing' : 'preview-chunk'
+}
+
+function PreviewChunks({ nodes, context, eagerEdge }: {
+  readonly nodes: readonly JSONContent[]
+  readonly context: RenderContext
+  readonly eagerEdge: 'top' | 'bottom'
+}) {
   const chunks: JSONContent[][] = []
   for (let index = 0; index < nodes.length; index += previewChunkSize) {
     chunks.push(nodes.slice(index, index + previewChunkSize))
   }
   return <>{chunks.map((chunk, index) =>
-    <div className={`preview-chunk${index === 0 ? ' preview-chunk-leading' : ''}`} data-preview-chunk="" key={index}>
+    <div className={previewChunkClass(chunks, index, eagerEdge)} data-preview-chunk="" key={index}>
       <Nodes nodes={chunk} context={context} />
     </div>,
   )}</>
@@ -576,10 +587,11 @@ async function copyPreviewCode(button: HTMLButtonElement, timer: { current?: Ret
   }, 1400)
 }
 
-export function DocumentPreview({ content, activeComment = null, onComment }: {
+export function DocumentPreview({ content, activeComment = null, onComment, eagerEdge = 'top' }: {
   readonly content: JSONContent
   readonly activeComment?: string | null
   readonly onComment?: (id: string) => void
+  readonly eagerEdge?: 'top' | 'bottom'
 }) {
   const root = useRef<HTMLElement>(null)
   const copyTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined)
@@ -613,7 +625,7 @@ export function DocumentPreview({ content, activeComment = null, onComment }: {
   }
 
   return <article ref={root} className="document-editor document-preview" role="article" aria-label="文档预览" onClick={onClick}>
-    <PreviewChunks nodes={nodes} context={{ activeComment }} />
+    <PreviewChunks nodes={nodes} context={{ activeComment }} eagerEdge={eagerEdge} />
   </article>
 }
 

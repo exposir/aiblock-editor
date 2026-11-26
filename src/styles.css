@@ -1146,7 +1146,8 @@ html[data-theme-transitioning='true'] *:not(.theme-segment-thumb) {
   content-visibility: auto;
   contain-intrinsic-size: auto 900px;
 }
-.document-preview > .preview-chunk-leading {
+.document-preview > .preview-chunk-leading,
+.document-preview > .preview-chunk-trailing {
   display: contents;
   content-visibility: visible;
   contain-intrinsic-size: none;
