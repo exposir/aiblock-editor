@@ -6,6 +6,7 @@ export interface CliArguments {
   readonly values: ReadonlyMap<string, string>
   readonly flags: ReadonlySet<string>
   readonly help: boolean
+  readonly version: boolean
 }
 
 const valueFlags = new Set([
@@ -22,10 +23,15 @@ export function parseArguments(argv: readonly string[]): CliArguments {
   const values = new Map<string, string>()
   const flags = new Set<string>()
   let help = false
+  let version = false
   for (let index = 0; index < argv.length; index++) {
     const argument = argv[index]!
     if (argument === '-h') {
       help = true
+      continue
+    }
+    if (argument === '-v') {
+      version = true
       continue
     }
     if (!argument.startsWith('--')) {
@@ -39,6 +45,11 @@ export function parseArguments(argv: readonly string[]): CliArguments {
       help = true
       continue
     }
+    if (name === 'version') {
+      if (inline !== undefined) throw usageError('--version 不接受值。')
+      version = true
+      continue
+    }
     if (booleanFlags.has(name)) {
       if (inline !== undefined) throw usageError(`--${name} 不接受值。`)
       flags.add(name)
@@ -50,7 +61,7 @@ export function parseArguments(argv: readonly string[]): CliArguments {
     values.set(name, value)
   }
   const [command = null, ...rest] = positionals
-  return { command, positionals: rest, values, flags, help }
+  return { command, positionals: rest, values, flags, help, version }
 }
 
 export function allowedFlags(args: CliArguments, values: readonly string[], flags: readonly string[] = []) {

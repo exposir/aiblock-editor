@@ -175,16 +175,20 @@ function installMenu(setTheme: (mode: ThemeMode) => Promise<void>) {
         { type: 'separator' },
         {
           label: '外观',
-          submenu: themeModes.map(mode => ({
-            id: `theme-${mode}`,
-            label: themeLabels[mode],
-            type: 'radio',
-            checked: nativeTheme.themeSource === mode,
-            click: () => {
-              void setTheme(mode)
-              mainWindow?.webContents.send(channels.menuCommand, `theme-${mode}`)
-            },
-          })),
+          submenu: [
+            action('切换深浅色', 'toggle-theme', 'CmdOrCtrl+Shift+D'),
+            { type: 'separator' },
+            ...themeModes.map(mode => ({
+              id: `theme-${mode}`,
+              label: themeLabels[mode],
+              type: 'radio' as const,
+              checked: nativeTheme.themeSource === mode,
+              click: () => {
+                void setTheme(mode)
+                mainWindow?.webContents.send(channels.menuCommand, `theme-${mode}`)
+              },
+            })),
+          ],
         },
         { type: 'separator' },
         { role: 'resetZoom' }, { role: 'zoomIn' }, { role: 'zoomOut' },
@@ -403,7 +407,11 @@ async function createWindow(
 protocol.registerSchemesAsPrivileged([{ scheme: imageAssetScheme, privileges: { standard: true, secure: true, supportFetchAPI: true, corsEnabled: true } }])
 
 if (app.requestSingleInstanceLock()) {
-  app.on('before-quit', () => { quitting = true; workspaceWatcher?.close() })
+  app.on('before-quit', () => { quitting = true })
+  app.on('will-quit', () => {
+    workspaceWatcher?.close()
+    workspaceWatcher = undefined
+  })
   process.on('SIGINT', () => app.quit())
   process.on('SIGTERM', () => app.quit())
   if (appUrl !== productionPage) process.stdin.once('end', () => app.quit()).resume()

@@ -75,6 +75,16 @@ function withActiveContent(workspace: Pages, content: JSONContent | undefined): 
   }
 }
 
+function sameDocument(schema: Schema, left: JSONContent | undefined, right: JSONContent | undefined) {
+  if (left === right) return true
+  if (!left || !right) return false
+  try {
+    return schema.nodeFromJSON(left).eq(schema.nodeFromJSON(right))
+  } catch {
+    return false
+  }
+}
+
 function workspaceConflict(error: unknown): WorkspaceConflict | null {
   if (!error || typeof error !== 'object') return null
   const value = error as { name?: unknown; code?: unknown; files?: unknown }
@@ -337,7 +347,7 @@ export function useWorkspace(schema: Schema, persistence?: WorkspacePersistence)
     else void flush()
   }, [cachedContent, flush, publish, remember, selectContent, track])
 
-  const reloadFromDisk = useCallback(async (change: WorkspaceExternalChange) => {
+  const reloadFromDisk = useCallback(async (change: WorkspaceExternalChange, forceRemount: boolean) => {
     const previous = current.current
     if (!previous || reloading.current) return
     if (inFlight.current) await inFlight.current.catch(() => undefined)
@@ -345,12 +355,13 @@ export function useWorkspace(schema: Schema, persistence?: WorkspacePersistence)
     try {
       const index = await storage.readIndex()
       if (!index) throw new Error('Workspace is missing')
-      const pageIds = new Set([index.activePageId, ...change.pageIds])
+      const activePageId = index.activePageId
+      const pageIds = new Set([activePageId, ...change.pageIds])
       const contents = new Map<string, JSONContent>()
       for (const id of pageIds) {
         const shard = await storage.readPage(id)
         if (!shard) {
-          if (id === index.activePageId) throw new Error('Active page is missing')
+          if (id === activePageId) throw new Error('Active page is missing')
           continue
         }
         contents.set(id, checkedPageContent(schema, shard, id).content)
@@ -360,6 +371,29 @@ export function useWorkspace(schema: Schema, persistence?: WorkspacePersistence)
         pages: index.pages,
         ...(index.trash === undefined ? {} : { trash: index.trash }),
         ...(index.demoVersion === undefined ? {} : { demoVersion: index.demoVersion }),
+      }
+      const previousActiveContent = findPage(previous.workspace, previous.workspace.activePageId)?.content
+      const preserveEditor = !forceRemount &&
+        activePageId === previous.workspace.activePageId &&
+        !change.pageIds.includes(activePageId) &&
+        sameDocument(schema, previousActiveContent, contents.get(activePageId))
+      if (preserveEditor) {
+        const retained = new Set([...workspace.pages, ...workspace.trash ?? []].map(page => page.id))
+        for (const id of new Set([...change.pageIds, ...cache.current.keys(), ...reads.current.keys()])) {
+          if (id === activePageId && retained.has(id)) continue
+          if (retained.has(id) && !change.pageIds.includes(id)) continue
+          cache.current.delete(id)
+          reads.current.delete(id)
+        }
+        publish({
+          workspace: withActiveContent(workspace, previousActiveContent),
+          anchor: previous.anchor,
+          revision: previous.revision,
+        })
+        setExternalConflict(null)
+        setSaveFailed(false)
+        setLoadFailed(false)
+        return
       }
       draft.current = null
       dirty.current.clear()
@@ -371,11 +405,11 @@ export function useWorkspace(schema: Schema, persistence?: WorkspacePersistence)
       for (const [id, content] of contents) cache.current.set(id, content)
       forceWrite.current = false
       publish({
-        workspace: withActiveContent(workspace, contents.get(index.activePageId)),
+        workspace: withActiveContent(workspace, contents.get(activePageId)),
         anchor: null,
         revision: previous.revision + 1,
       })
-      syncLocation(index.activePageId, null, 'replace')
+      syncLocation(activePageId, null, 'replace')
       setExternalConflict(null)
       setSaveFailed(false)
       setLoadFailed(false)
@@ -401,7 +435,7 @@ export function useWorkspace(schema: Schema, persistence?: WorkspacePersistence)
           pageIds: conflict.files.filter(file => file !== 'index' && isPageId(file)),
         }
       : { indexChanged: true, pageIds: [] }
-    void reloadFromDisk(change).catch(() => undefined)
+    void reloadFromDisk(change, true).catch(() => undefined)
   }, [externalConflict, reloadFromDisk])
 
   const externalHandler = useRef<(change: WorkspaceExternalChange) => void>(() => {})
@@ -414,7 +448,7 @@ export function useWorkspace(schema: Schema, persistence?: WorkspacePersistence)
       })
       return
     }
-    void reloadFromDisk(change).catch(() => undefined)
+    void reloadFromDisk(change, false).catch(() => undefined)
   }
   useEffect(() => storage.onExternalChange?.(change => externalHandler.current(change)), [storage])
 

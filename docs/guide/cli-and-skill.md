@@ -11,6 +11,7 @@
 ```sh
 mkdir -p "$HOME/.local/bin"
 ln -s "$PWD/dist-cli/aiblock-doc.mjs" "$HOME/.local/bin/aiblock-doc"
+aiblock-doc --version
 aiblock-doc --help
 ```
 

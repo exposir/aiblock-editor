@@ -140,6 +140,23 @@ describe('hierarchical viewport observation', () => {
     expect(TestObserver.all).toHaveLength(0)
   })
 
+  it('stops polling for an element that never mounts and releases its timer', async () => {
+    vi.stubGlobal('IntersectionObserver', TestObserver)
+    vi.useFakeTimers()
+    try {
+      const element = document.createElement('span')
+      const listener = vi.fn()
+      const stop = observeViewport(element, 300, listener)
+      await vi.runAllTimersAsync()
+      expect(listener).toHaveBeenCalledWith(true)
+      expect(vi.getTimerCount()).toBe(0)
+      stop()
+      expect(TestObserver.all).toHaveLength(0)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
   it('keeps a tall band active when its first and last leaders both miss the fine viewport', async () => {
     vi.stubGlobal('IntersectionObserver', TestObserver)
     const elements = Array.from({ length: 30 }, () => document.createElement('span'))

@@ -1,6 +1,6 @@
 # aiblock-doc CLI 参考
 
-CLI 操作本地 Electron v2 工作区。运行 `aiblock-doc --help` 查看当前二进制的用法。以下 JSON 是响应结构示例，UUID、时间、标签和资产哈希随工作区变化，只能用于理解输出。实际调用总是读取当前工作区的值。
+CLI 操作本地 Electron v2 工作区。运行 `aiblock-doc --help` 查看当前二进制的用法，运行 `aiblock-doc --version` 或 `-v` 查看版本。以下 JSON 是响应结构示例，UUID、时间、标签和资产哈希随工作区变化，只能用于理解输出。实际调用总是读取当前工作区的值。
 
 <!-- #region command-contract -->
 
@@ -38,13 +38,15 @@ CLI 操作本地 Electron v2 工作区。运行 `aiblock-doc --help` 查看当�
 
 `--workspace <dir>` 优先于 `$AIBLOCK_WORKSPACE`，两者缺省时自动使用系统默认的桌面工作区。macOS 的默认路径是 `~/Library/Application Support/aiblock-editor/workspace`。Windows 使用 `%APPDATA%\aiblock-editor\workspace`，缺少 `APPDATA` 时使用用户目录下的 `AppData\Roaming`。Linux 使用 `$XDG_CONFIG_HOME/aiblock-editor/workspace`，缺少变量时使用 `~/.config`。相对路径以命令的执行目录为准。给已有旧桌面工作区写入前，先用 `list` 打开它。读取索引时会尝试把有效的旧 `workspace.json` 迁移为 v2。
 
+`--version` 和 `-v` 输出构建时的 `package.json` 版本号并退出 0，不需要工作区。
+
 `--markdown -` 显式走 stdin，文件输入按严格 UTF-8 读取，路径相对于执行目录。`append` 与 `update` 在交互终端且无输入时返回参数错误。`update` 还拒绝空白 Markdown、非 UTF-8 文件和渲染后没有任何可见块的内容。创建已有工作区的页面时，只有 `--activate` 会切换活动页，首次创建自动激活。若删除当前活动页，CLI 优先选择目标节点的后一个同级页，其次是前一个同级页、父页或首个剩余页。
 
 `--dry-run` 校验写命令并预演结果，正文和索引保持原样。工作区写命令的预演会短暂持有文件锁，目录尚不存在时可能被创建。`create` 预演返回 `dryRun: true` 和临时 `page`，两个标签为 `null`。`append`、`update`、`patch`、`rename`、`move`、`delete`、`comment-reply` 和 `restore` 预演增加 `dryRun: true` 并返回当前标签；`delete` 预演仍报告真实的 `trashed` 结果。`add-image` 预演只校验文件并计算确定性资产元数据，不创建 `assets/`。`gc` 预演只报告候选，不删除文件。`list`、`get`、`outline`、`search`、`comments` 和 `trash-list` 接受该选项但执行正常读取。
 
 ## JSON 信封与退出码
 
-正常数据响应是一行 stdout JSON `{"ok":true,"data":{...}}`。失败是一行 stderr JSON `{"ok":false,"error":{"code":"...","message":"...","hint":"..."}}`，`hint` 可以为空。`--help` 和 `-h` 在 stdout 输出纯文本并退出 0。省略命令同样输出纯文本帮助并退出 2。通过包管理器调用时，包管理器可能在 stderr 添加日志。
+正常数据响应是一行 stdout JSON `{"ok":true,"data":{...}}`。失败是一行 stderr JSON `{"ok":false,"error":{"code":"...","message":"...","hint":"..."}}`，`hint` 可以为空。`--version` 和 `-v` 输出版本号并退出 0。`--help` 和 `-h` 在 stdout 输出纯文本并退出 0。省略命令同样输出纯文本帮助并退出 2。通过包管理器调用时，包管理器可能在 stderr 添加日志。
 
 | 退出码 | `error.code` | 含义与处理 |
 | --- | --- | --- |
@@ -413,7 +415,7 @@ printf '## 截图\n\n%s\n' '![](asset:<id>)' |
   aiblock-doc append "$page_id" --if-match "$etag" --markdown -
 ```
 
-`add-image --dry-run` 只校验文件并计算确定性元数据，不创建 `assets/`。图片文件不存在退出 3；格式、尺寸或大小不合法退出 5。`asset:` 引用只在同一工作区有效，把 Markdown 交给另一个工作区时需要一并复制 `assets/`。本地资产 ID 必须已存在。Markdown 引用只存地址。编辑器支持用 `<img>` 保留宽高、展示宽度和对齐。纯 Node CLI 的 Markdown 导入缺少 DOM，该 HTML 图片分支会跳过图片。CLI 输入用 `![…](…)`，检查原生图像布局用 `get --format json`。
+`add-image --dry-run` 只校验文件并计算确定性元数据，不创建 `assets/`。图片文件不存在退出 3；格式、尺寸或大小不合法退出 5。`asset:` 引用只在同一工作区有效，把 Markdown 交给另一个工作区时需要一并复制 `assets/`。本地资产 ID 必须已存在。Markdown 引用只存地址。编辑器和 Node CLI 都支持用 `<img>` 保留宽高、展示宽度、对齐和本地资产回退地址；HTML 属性值支持单双引号与实体转义。
 
 `gc` 在锁内读取活页和回收站的全部分片，任何分片缺失、JSON 损坏或文档不符合 schema 都会中止，且不删除资产。默认保留 5 分钟内新写入的未引用资产，避免与正在进行的保存竞争。
 

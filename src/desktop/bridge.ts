@@ -20,6 +20,7 @@ export interface SaveFileOptions {
 export const menuCommands = [
   'new-page', 'import-markdown', 'export-markdown', 'export-json',
   'toggle-pages', 'toggle-outline', 'toggle-comments',
+  'toggle-theme',
   ...themeModes.map(mode => `theme-${mode}` as const),
 ] as const
 

@@ -1,5 +1,5 @@
 import { createHash, webcrypto } from 'node:crypto'
-import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import type { Editor } from '@tiptap/core'
 import { createElement } from 'react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
@@ -16,7 +16,7 @@ import { browserWorkspaceStorage } from '../workspace/workspace-storage'
 import { testImage } from '../test/image-fixture'
 import {
   applyDesktopPlatform, getDesktopBridge,
-  openMarkdownFile, saveDocumentFile, suggestedFileName,
+  menuCommands, openMarkdownFile, saveDocumentFile, suggestedFileName,
 } from './bridge'
 import type { DesktopBridge, DesktopMenuCommand, SaveFileOptions } from './bridge'
 
@@ -361,11 +361,26 @@ describe('desktop workspace in App', () => {
     native.command('theme-dark')
     expect(document.documentElement).toHaveAttribute('data-theme', 'dark')
     expect(native.bridge.setTheme).toHaveBeenLastCalledWith('dark')
-    expect(screen.getByRole('button', { name: '外观：深色，切换为跟随系统' })).toBeInTheDocument()
+    const group = screen.getByRole('radiogroup', { name: '外观主题' })
+    expect(within(group).getAllByRole('radio')).toHaveLength(3)
+    expect(within(group).getByRole('radio', { name: '深色' })).toHaveAttribute('aria-checked', 'true')
 
     native.command('theme-light')
     expect(document.documentElement).toHaveAttribute('data-theme', 'light')
     expect(document.documentElement.style.colorScheme).toBe('light')
+
+    fireEvent.keyDown(window, { key: 'd', metaKey: true, shiftKey: true })
+    expect(document.documentElement).toHaveAttribute('data-theme', 'light')
+    expect(menuCommands).toContain('toggle-theme')
+
+    native.command('toggle-theme')
+    expect(document.documentElement).toHaveAttribute('data-theme', 'dark')
+    expect(native.bridge.setTheme).toHaveBeenLastCalledWith('dark')
+    expect(within(group).getByRole('radio', { name: '深色' })).toHaveAttribute('aria-checked', 'true')
+
+    native.command('toggle-theme')
+    expect(document.documentElement).toHaveAttribute('data-theme', 'light')
+    expect(native.bridge.setTheme).toHaveBeenLastCalledWith('light')
     view.unmount()
   })
 

@@ -64,6 +64,7 @@ export function attachCodePreview(panel: HTMLElement) {
         return
       }
       const image = doc.createElement('img')
+      image.className = 'code-preview-image'
       image.alt = 'Mermaid 图表'
       // An SVG image cannot run script or navigate the editor when displayed.
       image.src = `data:image/svg+xml;charset=utf-8,${encodeURIComponent(result.svg)}`

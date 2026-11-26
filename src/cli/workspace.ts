@@ -619,7 +619,9 @@ export async function restorePage(files: WorkspaceFiles, id: string, input: {
 export async function addImageAsset(files: WorkspaceFiles, path: string, dryRun: boolean) {
   const input = await readImageImport(path)
   if (!input) throw notFoundError(`图片文件不存在：${path}`, '检查文件路径后重试。')
-  const imported = await openImageAssetFiles(files.directory).importImage(input, dryRun)
+  const imported = dryRun
+    ? await openImageAssetFiles(files.directory).importImage(input, true)
+    : await files.mutate(async () => openImageAssetFiles(files.directory).importImage(input))
   const result = { asset: imported.asset, markdown: `![](asset:${imported.asset.id})`, created: imported.created }
   return dryRun ? { ...result, dryRun: true } : result
 }

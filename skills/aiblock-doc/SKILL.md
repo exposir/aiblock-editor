@@ -30,6 +30,8 @@ description: 用本地 aiblock-doc CLI 全文搜索、阅读大纲和局部小�
 
 ## 十七条命令
 
+用 `aiblock-doc --version` 或 `-v` 查看当前版本。以下为 17 条数据命令。
+
 ```text
 aiblock-doc list
 aiblock-doc get <page-id|@active> [--format markdown|json] [--block <id> | --section <id>] [--with-block-ids]
@@ -78,7 +80,7 @@ aiblock-doc gc [--grace-ms <n>] [--dry-run]
 
 ## 输出与退出码
 
-成功的数据命令在 stdout 输出一行 `{"ok":true,"data":{...}}`。命令错误在 stderr 输出一行 `{"ok":false,"error":{"code":"...","message":"...","hint":"..."}}`。`hint` 可以为空。帮助输出纯文本，`--help` / `-h` 退出 0，省略命令退出 2。
+成功的数据命令在 stdout 输出一行 `{"ok":true,"data":{...}}`。命令错误在 stderr 输出一行 `{"ok":false,"error":{"code":"...","message":"...","hint":"..."}}`。`hint` 可以为空。版本输出纯文本，`--version` / `-v` 退出 0。帮助输出纯文本，`--help` / `-h` 退出 0，省略命令退出 2。
 
 | 退出码 | 含义与动作 |
 | --- | --- |

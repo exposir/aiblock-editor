@@ -5,7 +5,7 @@ import type { Token, Tokens, TokensList } from 'marked'
 import { codeLanguage, isPreviewLanguage } from '../extensions/code-languages'
 import { normalizeColumnWidths } from '../extensions/column-widths'
 import { blockMathAt, findInlineMath, inlineMathAt, inlineMathMarkdown } from '../preview/math-markup'
-import { imageAttributes, imageDestination, readImageElement } from '../extensions/image-attributes'
+import { imageAttributes, imageAttributesFromHtml, imageDestination } from '../extensions/image-attributes'
 import type { ImageAttributes } from '../extensions/image-attributes'
 import { calloutTheme } from '../types'
 
@@ -82,6 +82,44 @@ function decodeHtmlEntities(value: string): string {
     }
     return named[body.toLowerCase()] ?? entity
   })
+}
+
+function htmlImageAttributes(raw: string): Map<string, string> | null {
+  const source = raw.trim()
+  if (!/^<img(?:\s|\/?>)/i.test(source)) return null
+  const attributes = new Map<string, string>()
+  let index = 4
+  while (index < source.length) {
+    while (/\s/.test(source[index] ?? '')) index++
+    if (source[index] === '>') return index === source.length - 1 ? attributes : null
+    if (source[index] === '/') {
+      index++
+      continue
+    }
+    const nameStart = index
+    while (index < source.length && !/[\s=/>]/.test(source[index]!)) index++
+    if (nameStart === index) return null
+    const name = source.slice(nameStart, index).toLowerCase()
+    while (/\s/.test(source[index] ?? '')) index++
+    let value = ''
+    if (source[index] === '=') {
+      index++
+      while (/\s/.test(source[index] ?? '')) index++
+      const quote = source[index] === '"' || source[index] === "'" ? source[index++] : null
+      const valueStart = index
+      if (quote) {
+        while (index < source.length && source[index] !== quote) index++
+        if (index >= source.length) return null
+        value = source.slice(valueStart, index)
+        index++
+      } else {
+        while (index < source.length && !/[\s>]/.test(source[index]!)) index++
+        value = source.slice(valueStart, index)
+      }
+    }
+    if (!attributes.has(name)) attributes.set(name, decodeHtmlEntities(value))
+  }
+  return null
 }
 
 export function sanitizeLinkHref(value: string): string | null {
@@ -336,9 +374,8 @@ function takeCallout(lines: string[], start: number): CustomBlockWithEnd | null 
   const icon = first[2]?.trim() || DEFAULT_CALLOUT_ICON
   const body: string[] = []
   let end = start + 1
-  while (end < lines.length && (lines[end] === '' || lines[end]!.startsWith('>'))) {
-    const line = lines[end]!
-    body.push(line.startsWith('>') ? line.replace(/^>\s?/, '') : '')
+  while (end < lines.length && lines[end]!.startsWith('>')) {
+    body.push(lines[end]!.replace(/^>\s?/, ''))
     end++
   }
   while (body.length && body[body.length - 1] === '') body.pop()
@@ -347,17 +384,24 @@ function takeCallout(lines: string[], start: number): CustomBlockWithEnd | null 
 
 function takeDetails(lines: string[], start: number): CustomBlockWithEnd | null {
   if (!/^<details(?:\s+open)?(?:\s*)>/i.test(lines[start] ?? '')) return null
+  let depth = 0
   let end = start
-  while (end < lines.length && !/^<\/details>/i.test(lines[end]!)) end++
+  for (; end < lines.length; end++) {
+    const line = lines[end]!
+    depth += [...line.matchAll(/<details\b[^>]*>/gi)].length
+    depth -= [...line.matchAll(/<\/details\s*>/gi)].length
+    if (depth <= 0) break
+  }
   if (end >= lines.length) return null
-  const header = lines.slice(start, end + 1)
-  const summaryLine = header.find(line => /^<summary>/i.test(line))
+  const region = lines.slice(start, end + 1)
+  const summaryLine = region.find(line => /^<summary>/i.test(line))
   if (!summaryLine) return null
   const summary = summaryLine.replace(/^<summary>/i, '').replace(/<\/summary>(?:\s*)<\/details>$/, '')
     .replace(/<\/summary>/i, '')
-  const open = !/<details>/i.test(lines[start]!) || /<details\s+open>/i.test(lines[start]!)
-  const summaryIndex = header.indexOf(summaryLine)
-  const source = header.slice(summaryIndex + 1).join('\n').replace(/^\n+/, '').replace(/\n+$/, '')
+  const openTag = /^<details\b([^>]*)>/i.exec(lines[start]!)?.[1] ?? ''
+  const open = /(?:^|\s)open(?:\s|=|$)/i.test(openTag.trim())
+  const summaryIndex = region.indexOf(summaryLine)
+  const source = lines.slice(start + summaryIndex + 1, end).join('\n').replace(/^\n+/, '').replace(/\n+$/, '')
   return { kind: 'toggle', open, summary, source, end }
 }
 
@@ -377,7 +421,7 @@ interface ParsedCustomBlock {
 }
 
 function customTokenPrefix(markdown: string): string {
-  let prefix = '%%CODEX-'
+  let prefix = '%%AIBLOCK-'
   while (markdown.includes(prefix)) prefix = `%${prefix}%`
   return prefix
 }
@@ -583,11 +627,17 @@ function parseTable(schema: Schema, token: Tokens.Table): ProseMirrorNode | null
 }
 
 function htmlImage(raw: string): ImageAttributes | false {
-  if (!/^<img\b/i.test(raw.trimStart()) || typeof document === 'undefined') return false
-  const template = document.createElement('template')
-  template.innerHTML = raw.trim()
-  const image = template.content.firstElementChild
-  return image?.tagName === 'IMG' ? readImageElement(image as HTMLElement) : false
+  const attributes = htmlImageAttributes(raw)
+  if (!attributes) return false
+  return imageAttributesFromHtml({
+    src: attributes.get('src'),
+    fallbackSrc: attributes.get('data-fallback-src'),
+    alt: attributes.get('alt'),
+    width: attributes.get('width'),
+    height: attributes.get('height'),
+    displayWidth: attributes.get('data-display-width'),
+    align: attributes.get('data-align'),
+  })
 }
 
 function paragraphBlocks(schema: Schema, token: Tokens.Paragraph) {
@@ -662,11 +712,14 @@ function tokenToBlocks(schema: Schema, tokens: readonly Token[], ctx: MarkdownCo
       }
       case 'html': {
         const custom = ctx.blocks.get(token.raw.trim())
-        if (custom) blocks.push(customBlockNode(schema, custom, ctx))
-        else if (schema.nodes.imageBlock && htmlImage(token.raw)) {
-          const attrs = htmlImage(token.raw)
-          if (attrs) blocks.push(schema.nodes.imageBlock.create(attrs))
-        } else if (token.raw.trim()) {
+        if (custom) {
+          blocks.push(customBlockNode(schema, custom, ctx))
+          break
+        }
+        const imageBlock = schema.nodes.imageBlock
+        const attrs = imageBlock ? htmlImage(token.raw) : false
+        if (attrs && imageBlock) blocks.push(imageBlock.create(attrs))
+        else if (token.raw.trim()) {
           const text = token.raw.replace(/<[^>]+>/g, '').trim()
           if (text) blocks.push(paragraphFromInline(schema, text))
         }

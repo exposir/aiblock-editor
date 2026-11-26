@@ -292,7 +292,11 @@ describe('App 多页面集成', () => {
   it('dialogs-reset: 快捷键弹窗可打开；重置先取消再确认', async () => {
     const user = await mountApp()
     await user.click(screen.getByRole('button', { name: '快捷键' }))
-    expect(screen.getByRole('dialog', { name: '快捷键' })).toBeInTheDocument()
+    const shortcuts = screen.getByRole('dialog', { name: '快捷键' })
+    expect(shortcuts).toBeInTheDocument()
+    const themeShortcut = within(shortcuts).getByText('切换深浅色').closest('div')!
+    expect(within(themeShortcut).getByText('Cmd / Ctrl')).toBeInTheDocument()
+    expect(within(themeShortcut).getByText('D')).toBeInTheDocument()
     await user.click(screen.getByRole('button', { name: '关闭快捷键' }))
     await user.click(screen.getByRole('button', { name: '重置示例工作区' }))
     expect(screen.getByRole('dialog', { name: '重置示例工作区' })).toBeInTheDocument()

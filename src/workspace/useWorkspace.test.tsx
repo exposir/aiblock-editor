@@ -7,7 +7,7 @@ import { WORKSPACE_STORAGE_KEY, activatePage, findPage, removePage, restoreTrash
 import type { WorkspaceState } from './page-store'
 import { useWorkspace } from './useWorkspace'
 import { pageMetadata, splitLegacyWorkspace } from './workspace-format'
-import type { PageShard, WorkspacePersistence } from './workspace-format'
+import type { PageShard, WorkspaceExternalChange, WorkspaceIndex, WorkspacePersistence } from './workspace-format'
 import { browserWorkspaceStorage } from './workspace-storage'
 
 const schema = getSchema(createEditorExtensions())
@@ -47,6 +47,7 @@ function seededStorage() {
   const seed = splitLegacyWorkspace(JSON.stringify(createDemoWorkspace(schema)))!
   let index = seed.index
   const pages = new Map(seed.pages.map(page => [page.id, page]))
+  let externalListener: ((change: WorkspaceExternalChange) => void) | undefined
   const storage = {
     readIndex: vi.fn(async () => index),
     readPage: vi.fn(async id => pages.get(id) ?? null),
@@ -55,8 +56,18 @@ function seededStorage() {
       for (const id of changes.removedPageIds) pages.delete(id)
       if (changes.index) index = changes.index
     }),
+    onExternalChange: vi.fn((listener: (change: WorkspaceExternalChange) => void) => {
+      externalListener = listener
+      return () => { if (externalListener === listener) externalListener = undefined }
+    }),
   } satisfies WorkspacePersistence
-  return { storage, seed, pages }
+  return {
+    storage,
+    seed,
+    pages,
+    setIndex(next: WorkspaceIndex) { index = next },
+    emit(change: WorkspaceExternalChange) { externalListener?.(change) },
+  }
 }
 
 describe('useWorkspace 工作区生命周期', () => {
@@ -399,5 +410,76 @@ describe('useWorkspace 工作区生命周期', () => {
     await act(async () => latest.retry())
     expect(latest.loadFailed).toBe(false)
     expect(findPage(latest.workspace!, target)?.content).toEqual(valid.content)
+  })
+
+  it('外部只改非活动页和索引元数据时保留活动页内容引用与 revision', async () => {
+    const { storage, seed, pages, setIndex, emit } = seededStorage()
+    const active = seed.index.activePageId
+    const inactive = seed.index.pages[1]!.id
+    const view = await mount(storage)
+    const activeContent = findPage(latest.workspace!, active)!.content
+    const revision = latest.revision
+    await act(async () => { await latest.loadPage(inactive) })
+
+    const externalContent = textDoc('外部修改的非活动页')
+    pages.set(inactive, { ...pages.get(inactive)!, content: externalContent, updatedAt: Date.now() })
+    setIndex({
+      ...seed.index,
+      pages: seed.index.pages.map(page => page.id === active ? { ...page, title: '外部索引标题' } : page),
+    })
+    await act(async () => {
+      emit({ indexChanged: true, pageIds: [inactive] })
+      await Promise.resolve()
+      await Promise.resolve()
+    })
+
+    expect(latest.revision).toBe(revision)
+    expect(findPage(latest.workspace!, active)?.title).toBe('外部索引标题')
+    expect(findPage(latest.workspace!, active)?.content).toBe(activeContent)
+    const readsBefore = storage.readPage.mock.calls.length
+    let loaded!: Awaited<ReturnType<typeof latest.loadPage>>
+    await act(async () => { loaded = await latest.loadPage(inactive) })
+    expect(storage.readPage.mock.calls.length).toBe(readsBefore + 1)
+    expect(loaded!.content).toEqual(externalContent)
+    view.unmount()
+  })
+
+  it('外部修改当前活动页时递增 revision 并载入新正文', async () => {
+    const { storage, seed, pages, emit } = seededStorage()
+    const active = seed.index.activePageId
+    const view = await mount(storage)
+    const revision = latest.revision
+    const externalContent = textDoc('外部修改的活动页')
+    pages.set(active, { ...pages.get(active)!, content: externalContent, updatedAt: Date.now() })
+
+    await act(async () => {
+      emit({ indexChanged: true, pageIds: [active] })
+      await Promise.resolve()
+      await Promise.resolve()
+    })
+
+    expect(latest.revision).toBe(revision + 1)
+    expect(findPage(latest.workspace!, active)?.content).toEqual(externalContent)
+    view.unmount()
+  })
+
+  it('外部切换活动页时递增 revision、载入目标页并同步地址', async () => {
+    const { storage, seed, pages, setIndex, emit } = seededStorage()
+    const next = seed.index.pages[1]!.id
+    const view = await mount(storage)
+    const revision = latest.revision
+    setIndex({ ...seed.index, activePageId: next })
+
+    await act(async () => {
+      emit({ indexChanged: true, pageIds: [] })
+      await Promise.resolve()
+      await Promise.resolve()
+    })
+
+    expect(latest.revision).toBe(revision + 1)
+    expect(latest.workspace?.activePageId).toBe(next)
+    expect(findPage(latest.workspace!, next)?.content).toEqual(pages.get(next)!.content)
+    expect(location.hash).toBe(`#page=${next}`)
+    view.unmount()
   })
 })

@@ -1,6 +1,6 @@
 import { Editor } from '@tiptap/core'
 import type { Node as ProseMirrorNode } from '@tiptap/pm/model'
-import { afterEach, describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import { demoDocument } from '../demo-document'
 import { createEditorExtensions } from '../extensions'
 import { docToMarkdown, markdownToDoc } from './markdown-codec'
@@ -34,6 +34,7 @@ function linkHrefs(doc: ProseMirrorNode) {
 }
 
 afterEach(() => {
+  vi.unstubAllGlobals()
   for (const instance of editors.splice(0)) instance.destroy()
 })
 
@@ -202,9 +203,9 @@ const fence = "\`\`\`"
 
   it('does not let literal internal tokens duplicate custom blocks', () => {
     const schema = editor('').schema
-    const doc = markdownToDoc(schema, '> [!NOTE]\n> body\n\n%%CODEX-0%%\n')
+    const doc = markdownToDoc(schema, '> [!NOTE]\n> body\n\n%%AIBLOCK-0%%\n')
     expect(counts(doc.toJSON()).callout).toBe(1)
-    expect(doc.textContent).toContain('%%CODEX-0%%')
+    expect(doc.textContent).toContain('%%AIBLOCK-0%%')
     expect(doc.lastChild?.type.name).toBe('paragraph')
   })
 
@@ -223,6 +224,45 @@ const fence = "\`\`\`"
     expect(counts(second.toJSON())).toMatchObject({ callout: 1, taskList: 1, blockquote: 1 })
   })
 
+  it('keeps adjacent callouts as separate blocks', () => {
+    const schema = editor('').schema
+    const markdown = `> [!NOTE]
+> first
+
+> [!TIP]
+> second
+`
+    const first = markdownToDoc(schema, markdown)
+    expect(first.children.map(node => node.type.name)).toEqual(['callout', 'callout'])
+    expect(first.children.map(node => node.attrs.theme)).toEqual(['blue', 'green'])
+    const second = markdownToDoc(schema, docToMarkdown(first))
+    expect(counts(second.toJSON()).callout).toBe(2)
+  })
+
+  it('does not absorb a following blockquote into a callout', () => {
+    const schema = editor('').schema
+    const markdown = `> [!NOTE]
+> callout
+
+> ordinary quote
+`
+    const first = markdownToDoc(schema, markdown)
+    expect(first.children.map(node => node.type.name)).toEqual(['callout', 'blockquote'])
+    expect(first.child(1).textContent).toBe('ordinary quote')
+    const second = markdownToDoc(schema, docToMarkdown(first))
+    expect(second.children.map(node => node.type.name)).toEqual(['callout', 'blockquote'])
+  })
+
+  it('keeps multiple quoted paragraphs inside one callout', () => {
+    const schema = editor('').schema
+    const doc = markdownToDoc(schema, '> [!WARNING]\n> first\n>\n> second\n')
+    expect(doc.childCount).toBe(1)
+    expect(doc.firstChild?.type.name).toBe('callout')
+    expect(doc.firstChild?.childCount).toBe(2)
+    expect(doc.textContent).toContain('first')
+    expect(doc.textContent).toContain('second')
+  })
+
   it('round-trips details toggles with open state and multiple blocks', () => {
     const markdown = `<details open>
 <summary>Summary</summary>
@@ -239,6 +279,35 @@ Second
     const second = markdownToDoc(first.type.schema, docToMarkdown(first))
     expect(docToMarkdown(first)).toContain('<details open>')
     expect(counts(second.toJSON())).toMatchObject({ toggle: 1, toggleSummary: 1, toggleContent: 1, taskList: 1 })
+  })
+
+  it('matches nested details by depth and excludes the outer closing line from its body', () => {
+    const schema = editor('').schema
+    const markdown = `<details open>
+<summary>Outer</summary>
+
+Before
+
+<details>
+<summary>Inner</summary>
+
+Inside
+
+</details>
+
+After
+
+</details>
+`
+    const first = markdownToDoc(schema, markdown)
+    expect(counts(first.toJSON()).toggle).toBe(2)
+    expect(first.firstChild?.type.name).toBe('toggle')
+    expect(first.firstChild?.textContent).toContain('Before')
+    expect(first.firstChild?.textContent).toContain('Inside')
+    expect(first.firstChild?.textContent).toContain('After')
+    const rendered = docToMarkdown(first)
+    expect(rendered.match(/<\/details>/g)).toHaveLength(2)
+    expect(counts(markdownToDoc(schema, rendered).toJSON()).toggle).toBe(2)
   })
 
   it('round-trips 2-3 column containers and normalized widths', () => {
@@ -304,5 +373,42 @@ describe('block images in Markdown', () => {
     const doc = markdownToDoc(schema, source)
     expect(doc.firstChild?.attrs).toMatchObject({ assetId: id, src: 'https://example.test/backup.webp' })
     expect(markdownToDoc(schema, docToMarkdown(doc)).eq(doc)).toBe(true)
+  })
+
+  it('round-trips every serialized image attribute without a DOM', () => {
+    const schema = editor('').schema
+    vi.stubGlobal('document', undefined)
+    expect(typeof document).toBe('undefined')
+    const id = 'c'.repeat(64) + '.png'
+    const source = `<img src='asset:${id}' alt='line 1&#10;line 2 &amp; &quot;quoted&quot;' width='1200' height='600' data-display-width='360' data-fallback-src='https://example.test/backup.png?q=1&amp;v=2' data-align='right'>`
+    const first = markdownToDoc(schema, source)
+    expect(first.firstChild?.attrs).toMatchObject({
+      assetId: id,
+      src: 'https://example.test/backup.png?q=1&v=2',
+      alt: 'line 1\nline 2 & "quoted"',
+      width: 1200,
+      height: 600,
+      displayWidth: 360,
+      align: 'right',
+    })
+    const rendered = docToMarkdown(first)
+    expect(rendered).toContain(`<img src="asset:${id}"`)
+    expect(rendered).toContain('alt="line 1&#10;line 2 &amp; &quot;quoted&quot;"')
+    expect(rendered).toContain('data-display-width="360"')
+    expect(rendered).toContain('data-fallback-src="https://example.test/backup.png?q=1&amp;v=2"')
+    expect(rendered).toContain('data-align="right"')
+    expect(markdownToDoc(schema, rendered).eq(first)).toBe(true)
+
+    const externalSource = '<img src="https://example.test/hero.png?q=1&amp;v=2" alt="hero" width="800" height="450" data-display-width="240" data-align="left">'
+    const external = markdownToDoc(schema, externalSource)
+    expect(external.firstChild?.attrs).toMatchObject({
+      assetId: null,
+      src: 'https://example.test/hero.png?q=1&v=2',
+      width: 800,
+      height: 450,
+      displayWidth: 240,
+      align: 'left',
+    })
+    expect(markdownToDoc(schema, docToMarkdown(external)).eq(external)).toBe(true)
   })
 })

@@ -10,6 +10,8 @@ import {
   resolveWorkspacePath, restorePage, searchPages, trashList, updatePage,
 } from './workspace'
 
+declare const __AIBLOCK_CLI_VERSION__: string
+
 export interface CliIO {
   stdout(text: string): void
   stderr(text: string): void
@@ -41,6 +43,7 @@ const helpText = `aiblock-doc — 操作本地 aiblock-editor 桌面工作区
 全局参数:
   --workspace <dir>   工作区目录（含 index.json）；默认 Electron userData/workspace
   --dry-run           只校验和预览写入，不落盘
+  --version, -v       显示版本
   --help, -h          显示本帮助
   @active             使用 index.json 中的当前活动页
 
@@ -160,6 +163,10 @@ export async function runCli(argv: readonly string[], io: CliIO = defaultIO()): 
     const args = parseArguments(argv)
     if (args.help) {
       io.stdout(helpText)
+      return 0
+    }
+    if (args.version) {
+      io.stdout(`${__AIBLOCK_CLI_VERSION__}\n`)
       return 0
     }
     if (!args.command) {

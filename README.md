@@ -26,6 +26,12 @@
 
 ## 快速开始
 
+### 直接下载发布包
+
+从 [GitHub Releases](https://github.com/exposir/aiblock-editor/releases) 下载 macOS `.dmg`，打开后将 `AIBlock Editor.app` 拖入「应用程序」。CLI 下载 `aiblock-doc-*.tar.gz`，解压后运行 `./aiblock-doc.mjs --help`，或把该文件加入 `PATH`。当前发布构建面向 Apple Silicon。
+
+### 从源码运行
+
 需要 Node.js `^22.12.0 || ^24.0.0 || >=26.0.0` 和 pnpm 12。
 
 敲下以下命令后，打开 Vite 输出的本地地址。页面树里有示例可直接打开。
@@ -50,6 +56,7 @@ CLI 与桌面端共用工作区。macOS 的默认工作区是 `~/Library/Applica
 
 ```sh
 pnpm cli:build
+pnpm cli -- --version
 pnpm cli -- list
 pnpm cli -- search '会议记录'
 pnpm cli -- outline @active --blocks

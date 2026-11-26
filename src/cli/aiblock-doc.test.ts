@@ -1,3 +1,5 @@
+// @vitest-environment node
+
 import { mkdtemp, open, readFile, readdir, rm, stat, writeFile, mkdir } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -55,6 +57,19 @@ afterEach(async () => {
 })
 
 describe('aiblock-doc CLI', () => {
+  it('prints the package version for --version and -v', async () => {
+    const version = JSON.parse(await readFile(new URL('../../package.json', import.meta.url), 'utf8')).version
+    for (const flag of ['--version', '-v']) {
+      const io = capture()
+      expect(await runCli([flag], io)).toBe(0)
+      expect(io.out()).toBe(`${version}\n`)
+      expect(io.err()).toBe('')
+    }
+    const help = capture()
+    expect(await runCli(['--help'], help)).toBe(0)
+    expect(help.out()).toContain('--version, -v')
+  })
+
   it('lists, reads markdown and JSON, and creates pages with unique block IDs', async () => {
     const directory = await tempWorkspace()
     const dry = await cli(directory, ['create', '--title', '预览页', '--dry-run'])
@@ -100,6 +115,49 @@ describe('aiblock-doc CLI', () => {
     expect((await cli(directory, ['list'])).json().data.activePageId).toBe(child.json().data.page.id)
     expect((await cli(directory, ['list'])).json().data.pages.find((item: { id: string }) => item.id === child.json().data.page.id))
       .toMatchObject({ parentId: page.page.id, order: 0 })
+  })
+
+  it('retains HTML image blocks through create, get, update and replace-section without a DOM', async () => {
+    expect(typeof document).toBe('undefined')
+    const directory = await tempWorkspace()
+    const assetId = 'd'.repeat(64) + '.png'
+    const image = `<img src='asset:${assetId}' alt='line 1&#10;line 2 &amp; &quot;quoted&quot;' width='1200' height='600' data-display-width='360' data-fallback-src='https://example.test/backup.png?q=1&amp;v=2' data-align='right'>`
+    const expected = {
+      assetId,
+      src: 'https://example.test/backup.png?q=1&v=2',
+      alt: 'line 1\nline 2 & "quoted"',
+      width: 1200,
+      height: 600,
+      displayWidth: 360,
+      align: 'right',
+    }
+    const imageBlock = (content: { content?: { type: string; attrs?: unknown }[] }) =>
+      content.content?.find(node => node.type === 'imageBlock')
+
+    const created = await create(directory, '图片往返', `# 图片\n\n${image}\n`)
+    const pageId = created.page.id
+    const first = (await cli(directory, ['get', pageId, '--format', 'json'])).json().data
+    expect(imageBlock(first.content)?.attrs).toMatchObject(expected)
+    const firstMarkdown = (await cli(directory, ['get', pageId])).json().data
+    expect(firstMarkdown.etag).toBe(first.etag)
+    expect(firstMarkdown.content).toContain(`<img src="asset:${assetId}"`)
+    expect(firstMarkdown.content).toContain('alt="line 1&#10;line 2 &amp; &quot;quoted&quot;"')
+    expect(firstMarkdown.content).toContain('data-display-width="360"')
+    expect(firstMarkdown.content).toContain('data-fallback-src="https://example.test/backup.png?q=1&amp;v=2"')
+    expect(firstMarkdown.content).toContain('data-align="right"')
+
+    const updated = await cli(directory, ['update', pageId, '--if-match', first.etag, '--markdown', '-'], `# 更新\n\n${image}\n`)
+    expect(updated.code).toBe(0)
+    const afterUpdate = (await cli(directory, ['get', pageId, '--format', 'json'])).json().data
+    expect(imageBlock(afterUpdate.content)?.attrs).toMatchObject(expected)
+
+    const outline = (await cli(directory, ['outline', pageId])).json().data
+    const section = await cli(directory, [
+      'patch', pageId, '--if-match', afterUpdate.etag, '--replace-section', outline.outline[0].blockId, '--markdown', '-',
+    ], `## 替换小节\n\n${image}\n`)
+    expect(section.code).toBe(0)
+    const afterPatch = (await cli(directory, ['get', pageId, '--format', 'json'])).json().data
+    expect(imageBlock(afterPatch.content)?.attrs).toMatchObject(expected)
   })
 
   it('appends losslessly, enforces if-match, and supports dry-run', async () => {
@@ -335,6 +393,22 @@ describe('CLI assets and trash compatibility', () => {
     expect((await cli(directory, ['get', page.page.id])).json().data.content).toContain(saved.markdown)
     expect((await cli(directory, ['get', page.page.id, '--format', 'json'])).json().data.content.content[0])
       .toMatchObject({ type: 'imageBlock', attrs: { assetId: saved.asset.id } })
+  })
+
+  it('add-image: preview ignores a busy workspace lock while a real import reports exit 4 without writing', async () => {
+    const directory = await tempWorkspace()
+    const file = await writeImage(directory, 'locked.png')
+    await writeFile(join(directory, '.lock'), JSON.stringify({ token: 'held', pid: process.pid, createdAt: Date.now() }))
+    const dry = await cli(directory, ['add-image', file, '--dry-run'])
+    expect(dry.code).toBe(0)
+    expect(dry.json().data.dryRun).toBe(true)
+    await expect(stat(join(directory, 'assets'))).rejects.toMatchObject({ code: 'ENOENT' })
+
+    const blocked = await cli(directory, ['add-image', file])
+    expect(blocked.code).toBe(4)
+    expect(JSON.parse(blocked.stderr).error).toMatchObject({ code: 'conflict' })
+    expect(JSON.parse(blocked.stderr).error.message).toContain('占用')
+    await expect(stat(join(directory, 'assets'))).rejects.toMatchObject({ code: 'ENOENT' })
   })
 
   it('add-image: rejects a missing file with exit 3 and invalid signature, dimensions or size with exit 5', async () => {

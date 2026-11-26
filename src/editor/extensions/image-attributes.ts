@@ -43,16 +43,36 @@ export function imageAttributes(source: Partial<Record<keyof ImageAttributes, un
 }
 
 export function readImageElement(element: HTMLElement): ImageAttributes | false {
-  const primary = imageSource(element.getAttribute('src'))
-  if (!primary) return false
-  return imageAttributes({
-    assetId: primary.assetId,
-    src: primary.src ?? element.getAttribute('data-fallback-src'),
+  return imageAttributesFromHtml({
+    src: element.getAttribute('src'),
+    fallbackSrc: element.getAttribute('data-fallback-src'),
     alt: element.getAttribute('alt'),
     width: element.getAttribute('width'),
     height: element.getAttribute('height'),
     displayWidth: element.getAttribute('data-display-width'),
     align: element.getAttribute('data-align'),
+  })
+}
+
+export function imageAttributesFromHtml(source: {
+  readonly src: unknown
+  readonly fallbackSrc?: unknown
+  readonly alt?: unknown
+  readonly width?: unknown
+  readonly height?: unknown
+  readonly displayWidth?: unknown
+  readonly align?: unknown
+}): ImageAttributes | false {
+  const primary = imageSource(source.src)
+  if (!primary) return false
+  return imageAttributes({
+    assetId: primary.assetId,
+    src: primary.src ?? source.fallbackSrc,
+    alt: source.alt,
+    width: source.width,
+    height: source.height,
+    displayWidth: source.displayWidth,
+    align: source.align,
   })
 }
 

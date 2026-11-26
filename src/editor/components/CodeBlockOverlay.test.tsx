@@ -170,6 +170,7 @@ describe('CodeBlockOverlay', () => {
   it('switches between preview, split and editable source without changing the code', async () => {
     const { pre, editor, host } = mountEditor('<pre data-language="mermaid"><code>flowchart LR\nA--&gt;B</code></pre>')
     const preview = await screen.findByRole('img', { name: 'Mermaid 图表' })
+    expect(preview).toHaveClass('code-preview-image')
     expect(pre).not.toBeVisible()
     expect(preview).toBeVisible()
     expect(host).toContainElement(screen.getByRole('button', { name: '分栏' }))

@@ -56,6 +56,8 @@ export const viewportCoarseMargin = (margin: number) => margin + viewportBandExt
 export const viewportOverviewMargin = (margin: number) => margin + viewportOverviewExtra
 
 const viewports = new WeakMap<Document, Map<number, Viewport>>()
+const pendingPollLimit = 8
+const pendingPollDelay = (attempt: number) => Math.min(250, 8 * 2 ** attempt)
 
 function follows(left: Element, right: Element): boolean {
   return left !== right && Boolean(left.compareDocumentPosition(right) & 4)
@@ -419,10 +421,21 @@ function createViewport(owner: Document, Observer: typeof IntersectionObserver, 
           waiting = { target, listeners: new Set() }
           pending.set(target, waiting)
           const current = waiting
+          let attempt = 0
           const connect = () => {
-            if (pending.get(target) !== current) return
-            if (target.isConnected) attach(target)
-            else current.timer = setTimeout(connect, 0)
+            current.timer = undefined
+            if (disposed || pending.get(target) !== current) return
+            if (target.isConnected) {
+              attach(target)
+              return
+            }
+            attempt++
+            if (attempt >= pendingPollLimit) {
+              pending.delete(target)
+              for (const listener of current.listeners) listener(true)
+              return
+            }
+            current.timer = setTimeout(connect, pendingPollDelay(attempt))
           }
           queueMicrotask(connect)
         }

@@ -8,7 +8,13 @@
 
 第一次打开编辑器时，可以在页面树里进入示例文档，也可以从空白页开始。
 
-## 环境要求
+## 直接下载发布包
+
+从 [GitHub Releases](https://github.com/exposir/aiblock-editor/releases) 下载 macOS `.dmg`，打开后将 `AIBlock Editor.app` 拖入「应用程序」。CLI 下载 `aiblock-doc-*.tar.gz`，解压后运行 `./aiblock-doc.mjs --help`，或把该文件加入 `PATH`。当前发布构建面向 Apple Silicon。
+
+## 从源码构建
+
+### 环境要求
 
 - Node.js 版本范围为 `^22.12.0 || ^24.0.0 || >=26.0.0`，包管理器使用仓库声明的 `pnpm@12.21.0`。
 - 下文的桌面打包路径以 Apple Silicon macOS 为例。CLI 的独立构建产物只需要 Node.js。
@@ -45,6 +51,7 @@ pnpm electron:pack
 ```sh
 pnpm cli:build
 pnpm cli -- list
+node dist-cli/aiblock-doc.mjs --version
 node dist-cli/aiblock-doc.mjs --help
 ```
 

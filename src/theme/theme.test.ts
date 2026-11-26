@@ -1,23 +1,45 @@
-import { act, render, screen } from '@testing-library/react'
+import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { createElement } from 'react'
 import { afterEach, beforeEach, describe, expect, it, onTestFinished, vi } from 'vitest'
 import App from '../App'
-import { THEME_MEDIA_QUERY, THEME_STORAGE_KEY, parseThemeMode, readThemeMode, resolveTheme, syncTheme } from './theme'
+import {
+  THEME_MEDIA_QUERY, THEME_REDUCED_MOTION_QUERY, THEME_STORAGE_KEY,
+  parseThemeMode, readThemeMode, resolveTheme, syncTheme, toggleResolvedTheme,
+} from './theme'
 import type { ThemeMode } from './theme'
 
-function systemPreference(dark: boolean) {
+function systemPreference(dark: boolean, reduced = false) {
   const media = new EventTarget()
   Object.defineProperty(media, 'matches', { get: () => dark })
+  const reducedMedia = { matches: reduced } as MediaQueryList
   const original = window.matchMedia
   const match = vi.spyOn(window, 'matchMedia').mockImplementation(query =>
-    query === THEME_MEDIA_QUERY ? media as unknown as MediaQueryList : original.call(window, query),
+    query === THEME_MEDIA_QUERY ? media as unknown as MediaQueryList
+      : query === THEME_REDUCED_MOTION_QUERY ? reducedMedia
+      : original.call(window, query),
   )
   onTestFinished(() => match.mockRestore())
   return (value: boolean) => {
     dark = value
     media.dispatchEvent(new Event('change'))
   }
+}
+
+function viewTransitionSupport() {
+  let resolveFinished!: () => void
+  const finished = new Promise<void>(resolve => { resolveFinished = resolve })
+  const skipTransition = vi.fn(() => resolveFinished())
+  const startViewTransition = vi.fn((callback: () => void) => {
+    callback()
+    return { finished, skipTransition } as unknown as ViewTransition
+  })
+  Object.defineProperty(document, 'startViewTransition', {
+    configurable: true,
+    value: startViewTransition,
+  })
+  onTestFinished(() => { Reflect.deleteProperty(document, 'startViewTransition') })
+  return { startViewTransition, skipTransition, finish: resolveFinished }
 }
 
 function expectTheme(theme: 'light' | 'dark') {
@@ -32,7 +54,9 @@ afterEach(() => {
   localStorage.clear()
   history.replaceState(null, '', '/')
   delete document.documentElement.dataset.theme
+  delete document.documentElement.dataset.themeTransitioning
   document.documentElement.style.removeProperty('color-scheme')
+  Reflect.deleteProperty(document, 'startViewTransition')
 })
 
 describe('theme preference', () => {
@@ -46,6 +70,14 @@ describe('theme preference', () => {
   ] as const)('resolves %s with OS dark=%s to %s', (mode, dark, expected) => {
     expect(parseThemeMode(mode)).toBe(mode)
     expect(resolveTheme(mode, dark)).toBe(expected)
+  })
+
+  it.each([
+    ['system', false, 'dark'], ['system', true, 'light'],
+    ['light', false, 'dark'], ['light', true, 'dark'],
+    ['dark', false, 'light'], ['dark', true, 'light'],
+  ] as const)('toggles %s with OS dark=%s to the opposite resolved theme %s', (mode, dark, expected) => {
+    expect(toggleResolvedTheme(mode, dark)).toBe(expected)
   })
 
   it.each([null, undefined, '', 'sepia', 'Dark', { mode: 'dark' }])('falls back to system for %j', value => {
@@ -111,24 +143,179 @@ describe('theme preference', () => {
     stop()
   })
 
-  it('cycles all three modes with the keyboard and preserves the editor instance', async () => {
+  it('shows three visible theme choices and selects each without rebuilding the editor', async () => {
     const setSystem = systemPreference(false)
     const scroll = vi.spyOn(window, 'scrollTo').mockImplementation(() => {})
     onTestFinished(() => scroll.mockRestore())
     const user = userEvent.setup()
     const view = render(createElement(App))
     const editor = await screen.findByRole('textbox', { name: '文档正文' })
-    const control = screen.getByRole('button', { name: '外观：跟随系统，切换为浅色' })
-    control.focus()
-    await user.keyboard('{Enter}')
-    expect(screen.getByRole('button', { name: '外观：浅色，切换为深色' })).toHaveFocus()
-    await user.keyboard(' ')
+    const group = screen.getByRole('radiogroup', { name: '外观主题' })
+    const radios = within(group).getAllByRole('radio')
+    const thumb = group.querySelector('.theme-segment-thumb')
+    expect(radios.map(radio => radio.getAttribute('aria-label'))).toEqual(['浅色', '深色', '跟随系统'])
+    expect(radios.map(radio => radio.getAttribute('title'))).toEqual(['浅色', '深色', '跟随系统'])
+    expect(thumb).toHaveAttribute('aria-hidden', 'true')
+    expect(group.style.getPropertyValue('--theme-index')).toBe('2')
+    const [light, dark, system] = radios as [HTMLElement, HTMLElement, HTMLElement]
+    expect(system).toHaveAttribute('aria-checked', 'true')
+
+    await user.click(light)
+    expect(light).toHaveAttribute('aria-checked', 'true')
+    expect(group.style.getPropertyValue('--theme-index')).toBe('0')
+    expectTheme('light')
+    expect(localStorage.getItem(THEME_STORAGE_KEY)).toBe('light')
+
+    await user.click(dark)
+    expect(dark).toHaveAttribute('aria-checked', 'true')
+    expect(group.style.getPropertyValue('--theme-index')).toBe('1')
     expectTheme('dark')
     expect(localStorage.getItem(THEME_STORAGE_KEY)).toBe('dark')
-    await user.keyboard('{Enter}')
-    expectTheme('light')
+
+    await user.click(system)
+    expect(system).toHaveAttribute('aria-checked', 'true')
+    expect(group.style.getPropertyValue('--theme-index')).toBe('2')
     act(() => setSystem(true))
     expectTheme('dark')
+    expect(screen.getByRole('textbox', { name: '文档正文' })).toBe(editor)
+    view.unmount()
+  })
+
+  it('does not start a View Transition on the first theme application', async () => {
+    systemPreference(false)
+    localStorage.setItem(THEME_STORAGE_KEY, 'dark')
+    const transition = viewTransitionSupport()
+    const scroll = vi.spyOn(window, 'scrollTo').mockImplementation(() => {})
+    onTestFinished(() => scroll.mockRestore())
+    const view = render(createElement(App))
+    await screen.findByRole('textbox', { name: '文档正文' })
+    expectTheme('dark')
+    expect(transition.startViewTransition).not.toHaveBeenCalled()
+    view.unmount()
+  })
+
+  it('does not start a View Transition when the resolved theme does not change', async () => {
+    systemPreference(false)
+    const transition = viewTransitionSupport()
+    const scroll = vi.spyOn(window, 'scrollTo').mockImplementation(() => {})
+    onTestFinished(() => scroll.mockRestore())
+    const user = userEvent.setup()
+    const view = render(createElement(App))
+    await screen.findByRole('textbox', { name: '文档正文' })
+    const group = screen.getByRole('radiogroup', { name: '外观主题' })
+    await user.click(within(group).getByRole('radio', { name: '浅色' }))
+    expect(group.style.getPropertyValue('--theme-index')).toBe('0')
+    expectTheme('light')
+    expect(transition.startViewTransition).not.toHaveBeenCalled()
+    expect(document.documentElement).not.toHaveAttribute('data-theme-transitioning')
+    view.unmount()
+  })
+
+  it('cross-fades an actual theme change and clears the transition attribute when finished', async () => {
+    systemPreference(false)
+    const transition = viewTransitionSupport()
+    const scroll = vi.spyOn(window, 'scrollTo').mockImplementation(() => {})
+    onTestFinished(() => scroll.mockRestore())
+    const user = userEvent.setup()
+    const view = render(createElement(App))
+    await screen.findByRole('textbox', { name: '文档正文' })
+    const group = screen.getByRole('radiogroup', { name: '外观主题' })
+    await user.click(within(group).getByRole('radio', { name: '深色' }))
+    expect(transition.startViewTransition).toHaveBeenCalledOnce()
+    expectTheme('dark')
+    expect(document.documentElement).toHaveAttribute('data-theme-transitioning', 'true')
+    transition.finish()
+    await waitFor(() => expect(document.documentElement).not.toHaveAttribute('data-theme-transitioning'))
+    view.unmount()
+  })
+
+  it('skips View Transition when reduced motion is requested', async () => {
+    systemPreference(false, true)
+    const transition = viewTransitionSupport()
+    const scroll = vi.spyOn(window, 'scrollTo').mockImplementation(() => {})
+    onTestFinished(() => scroll.mockRestore())
+    const user = userEvent.setup()
+    const view = render(createElement(App))
+    await screen.findByRole('textbox', { name: '文档正文' })
+    const group = screen.getByRole('radiogroup', { name: '外观主题' })
+    await user.click(within(group).getByRole('radio', { name: '深色' }))
+    expectTheme('dark')
+    expect(transition.startViewTransition).not.toHaveBeenCalled()
+    await waitFor(() => expect(document.documentElement).not.toHaveAttribute('data-theme-transitioning'))
+    view.unmount()
+  })
+
+  it('interrupts an active View Transition and leaves the latest theme without a stale attribute', async () => {
+    systemPreference(false)
+    const transition = viewTransitionSupport()
+    const scroll = vi.spyOn(window, 'scrollTo').mockImplementation(() => {})
+    onTestFinished(() => scroll.mockRestore())
+    const user = userEvent.setup()
+    const view = render(createElement(App))
+    await screen.findByRole('textbox', { name: '文档正文' })
+    const group = screen.getByRole('radiogroup', { name: '外观主题' })
+    await user.click(within(group).getByRole('radio', { name: '深色' }))
+    expectTheme('dark')
+    await user.click(within(group).getByRole('radio', { name: '浅色' }))
+    expect(transition.skipTransition).toHaveBeenCalledOnce()
+    expect(transition.startViewTransition).toHaveBeenCalledOnce()
+    expectTheme('light')
+    expect(localStorage.getItem(THEME_STORAGE_KEY)).toBe('light')
+    await waitFor(() => expect(document.documentElement).not.toHaveAttribute('data-theme-transitioning'))
+    view.unmount()
+  })
+
+  it('moves between theme radios with arrow keys and supports Enter and Space selection', async () => {
+    systemPreference(false)
+    const scroll = vi.spyOn(window, 'scrollTo').mockImplementation(() => {})
+    onTestFinished(() => scroll.mockRestore())
+    const user = userEvent.setup()
+    const view = render(createElement(App))
+    await screen.findByRole('textbox', { name: '文档正文' })
+    const group = screen.getByRole('radiogroup', { name: '外观主题' })
+    const [light, dark, system] = within(group).getAllByRole('radio') as [HTMLElement, HTMLElement, HTMLElement]
+
+    system.focus()
+    await user.keyboard('{ArrowLeft}')
+    expect(dark).toHaveFocus()
+    expect(dark).toHaveAttribute('aria-checked', 'true')
+    expectTheme('dark')
+
+    await user.keyboard('{ArrowLeft}')
+    expect(light).toHaveFocus()
+    expect(light).toHaveAttribute('aria-checked', 'true')
+    expectTheme('light')
+
+    await user.keyboard('{ArrowRight}')
+    expect(dark).toHaveFocus()
+    expect(dark).toHaveAttribute('aria-checked', 'true')
+
+    light.focus()
+    await user.keyboard('{Enter}')
+    expect(light).toHaveAttribute('aria-checked', 'true')
+    expectTheme('light')
+
+    system.focus()
+    await user.keyboard(' ')
+    expect(system).toHaveAttribute('aria-checked', 'true')
+    view.unmount()
+  })
+
+  it.each([
+    ['system', false, 'dark', 'ctrlKey'],
+    ['system', true, 'light', 'metaKey'],
+    ['light', false, 'dark', 'ctrlKey'],
+    ['dark', true, 'light', 'metaKey'],
+  ] as const)('flips %s with OS dark=%s to %s using Cmd/Ctrl+Shift+D', async (mode, prefersDark, expected, modifier) => {
+    systemPreference(prefersDark)
+    localStorage.setItem(THEME_STORAGE_KEY, mode)
+    const scroll = vi.spyOn(window, 'scrollTo').mockImplementation(() => {})
+    onTestFinished(() => scroll.mockRestore())
+    const view = render(createElement(App))
+    const editor = await screen.findByRole('textbox', { name: '文档正文' })
+    fireEvent.keyDown(window, { key: 'd', shiftKey: true, [modifier]: true })
+    expectTheme(expected)
+    expect(localStorage.getItem(THEME_STORAGE_KEY)).toBe(expected)
     expect(screen.getByRole('textbox', { name: '文档正文' })).toBe(editor)
     view.unmount()
   })

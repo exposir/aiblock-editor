@@ -6,12 +6,13 @@ import { getSchema } from '@tiptap/core'
 import type { Editor } from '@tiptap/core'
 import { Check, ChevronDown, ChevronRight, ClipboardCopy, Download, FileDown, FileUp, Keyboard, List, MessagesSquare, Monitor, Moon, PanelLeft, RotateCcw, Sun, X } from 'lucide-react'
 import { useCallback, useEffect, useEffectEvent, useLayoutEffect, useRef, useState, useSyncExternalStore } from 'react'
+import type { CSSProperties } from 'react'
 import { getDesktopBridge, openMarkdownFile, saveDocumentFile, suggestedFileName } from './desktop/bridge'
 import type { DesktopMenuCommand, DocumentFileFormat, MarkdownFile } from './desktop/bridge'
 import { createEditorExtensions } from './editor/extensions'
 import { docToMarkdown } from './editor/markdown/markdown-codec'
 import { downloadBlob, isMarkdownFile } from './editor/markdown/markdown-files'
-import { isThemeMode, readThemeMode, syncTheme, themeLabels } from './theme/theme'
+import { isThemeMode, readThemeMode, syncTheme, themeLabels, THEME_MEDIA_QUERY, toggleResolvedTheme } from './theme/theme'
 import type { ThemeMode } from './theme/theme'
 import { PageEditor } from './workspace/PageEditor'
 import type { EditPage } from './workspace/PageEditor'
@@ -42,18 +43,38 @@ interface Appearance {
   setMode(mode: ThemeMode): void
 }
 
-const themeControls = {
-  system: { icon: Monitor, next: 'light' },
-  light: { icon: Sun, next: 'dark' },
-  dark: { icon: Moon, next: 'system' },
+const themeOptions = {
+  light: { icon: Sun },
+  dark: { icon: Moon },
+  system: { icon: Monitor },
 } as const
+const themeOrder = ['light', 'dark', 'system'] as const
 
 function ThemeControl({ mode, setMode }: Appearance) {
-  const { icon: Icon, next } = themeControls[mode]
-  const label = `外观：${themeLabels[mode]}，切换为${themeLabels[next]}`
-  return <button type="button" className="icon-control" aria-label={label} title={label} onClick={() => setMode(next)}>
-    <Icon size={18} aria-hidden="true" />
-  </button>
+  const buttons = useRef<Array<HTMLButtonElement | null>>([])
+  const index = themeOrder.indexOf(mode)
+  return <div className="theme-segment" role="radiogroup" aria-label="外观主题" aria-orientation="horizontal"
+    style={{ '--theme-index': index } as CSSProperties}
+    onKeyDown={event => {
+      if (event.key !== 'ArrowLeft' && event.key !== 'ArrowRight') return
+      const current = themeOrder.indexOf(mode)
+      const delta = event.key === 'ArrowRight' ? 1 : -1
+      const next = (current + delta + themeOrder.length) % themeOrder.length
+      event.preventDefault()
+      setMode(themeOrder[next]!)
+      buttons.current[next]?.focus()
+    }}>
+    <span className="theme-segment-thumb" aria-hidden="true" />
+    {themeOrder.map((option, index) => {
+      const Icon = themeOptions[option].icon
+      const selected = mode === option
+      return <button key={option} ref={button => { buttons.current[index] = button }} type="button"
+        role="radio" aria-checked={selected} aria-label={themeLabels[option]} title={themeLabels[option]}
+        tabIndex={selected ? 0 : -1} className="theme-option" onClick={() => setMode(option)}>
+        <Icon size={14} aria-hidden="true" />
+      </button>
+    })}
+  </div>
 }
 
 type ConflictPreview = MarkdownDiff | { readonly message: string }
@@ -477,6 +498,7 @@ function Workspace({ workspace, anchor, saveFailed, loadFailed, retry, change, r
           <div><dt>撤销</dt><dd><kbd>Cmd / Ctrl</kbd> + <kbd>Z</kbd></dd></div>
           <div><dt>折叠块快捷输入</dt><dd><kbd>&gt;&gt; </kbd></dd></div>
           <div><dt>高亮块快捷输入</dt><dd><kbd>[! </kbd></dd></div>
+          <div><dt>切换深浅色</dt><dd><kbd>Cmd / Ctrl</kbd> + <kbd>Shift</kbd> + <kbd>D</kbd></dd></div>
           <div><dt>智能粘贴 Markdown</dt><dd><kbd>Cmd / Ctrl</kbd> + <kbd>V</kbd>，纯文本生效</dd></div>
         </dl>
       </dialog>
@@ -498,10 +520,25 @@ export default function App() {
   const [mode, setMode] = useState(() => readThemeMode(window))
   useLayoutEffect(() => syncTheme(window, mode), [mode])
   useEffect(() => bridge?.onMenuCommand(command => {
+    if (command === 'toggle-theme') {
+      setMode(current => toggleResolvedTheme(current, window.matchMedia(THEME_MEDIA_QUERY).matches))
+      return
+    }
     if (!command.startsWith('theme-')) return
     const selection = command.slice('theme-'.length)
     if (isThemeMode(selection)) setMode(selection)
   }), [bridge])
+  useEffect(() => {
+    if (bridge) return
+    const shortcut = (event: KeyboardEvent) => {
+      if (event.repeat || !(event.metaKey || event.ctrlKey) || !event.shiftKey || event.altKey ||
+          event.key.toLowerCase() !== 'd') return
+      event.preventDefault()
+      setMode(current => toggleResolvedTheme(current, window.matchMedia(THEME_MEDIA_QUERY).matches))
+    }
+    window.addEventListener('keydown', shortcut)
+    return () => window.removeEventListener('keydown', shortcut)
+  }, [bridge])
 
   const appearance = { mode, setMode }
   return <WorkspaceApp persistence={bridge} appearance={appearance} />
