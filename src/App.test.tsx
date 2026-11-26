@@ -395,7 +395,7 @@ describe('App 多页面集成', () => {
     const user = await mountApp()
     await user.click(screen.getByRole('button', { name: '配色主题' }))
     let panel = await screen.findByRole('dialog', { name: '配色主题' })
-    expect(within(panel).getAllByRole('button', { name: /Warm Paper|Notion|Lark|Bear/ })).toHaveLength(4)
+    expect(within(panel).getAllByRole('button', { name: /Warm Paper|Notion|Cloud Blue|Bear/ })).toHaveLength(4)
     await user.click(within(panel).getByRole('button', { name: '品牌' }))
     expect(within(panel).queryByRole('button', { name: /Notion/ })).not.toBeInTheDocument()
     expect(within(panel).getAllByRole('button', { name: /GitHub|Twitter|GoPro|Space AI|Linear|Obsidian/ }))

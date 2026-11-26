@@ -2,7 +2,7 @@ export type ThemeVariant = 'light' | 'dark'
 export type ThemePresetGroup = 'editorial' | 'brand' | 'developer'
 
 export const themePresetIds = [
-  'paper', 'notion', 'lark', 'bear',
+  'paper', 'notion', 'cloud-blue', 'bear',
   'github', 'twitter', 'gopro', 'space-ai', 'linear', 'obsidian',
   'catppuccin', 'tokyo-night', 'nord', 'solarized', 'gruvbox', 'dracula',
 ] as const
@@ -145,8 +145,8 @@ export const themePresets: Readonly<Record<ThemePresetId, ThemePresetDefinition>
     dark: seed('#191919', '#202020', '#529CCA', '#FFFFFF', '#E9E9E7', '#9B9B9B', '#FF7369',
       ['#FF7369', '#4DD4AC', '#82B1F6', '#F5B86D', '#9B9B9B', '#E9E9E7'], '#D2A8FF'),
   },
-  lark: {
-    id: 'lark', group: 'editorial', name: '飞书文档', englishName: 'Lark',
+  'cloud-blue': {
+    id: 'cloud-blue', group: 'editorial', name: '云端清蓝', englishName: 'Cloud Blue',
     light: seed('#F5F6F7', '#FFFFFF', '#3370FF', '#1F2329', '#2B2F36', '#646A73', '#D83931',
       ['#D83931', '#237A1D', '#245BDB', '#B76A00', '#646A73', '#1F2329'], '#7B4DDB'),
     dark: seed('#14161A', '#1D2026', '#5E92FF', '#E5E6EB', '#C9CDD4', '#A9AEB8', '#F76964',

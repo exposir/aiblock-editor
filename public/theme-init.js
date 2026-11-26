@@ -3,7 +3,7 @@
   const backgrounds = {
     paper: { light: '#F5F4EF', dark: '#1B1A18' },
     notion: { light: '#F7F7F5', dark: '#191919' },
-    lark: { light: '#F5F6F7', dark: '#14161A' },
+    'cloud-blue': { light: '#F5F6F7', dark: '#14161A' },
     bear: { light: '#F8F4EC', dark: '#1E1C1A' },
     github: { light: '#F6F8FA', dark: '#0D1117' },
     twitter: { light: '#F7F9F9', dark: '#000000' },

@@ -332,7 +332,7 @@ describe('theme presets', () => {
   it('ships 16 presets with orthogonal light and dark palettes', () => {
     expect(themePresetList).toHaveLength(16)
     expect(themePresetList.map(preset => preset.id)).toEqual([
-      'paper', 'notion', 'lark', 'bear', 'github', 'twitter', 'gopro', 'space-ai',
+      'paper', 'notion', 'cloud-blue', 'bear', 'github', 'twitter', 'gopro', 'space-ai',
       'linear', 'obsidian', 'catppuccin', 'tokyo-night', 'nord', 'solarized', 'gruvbox', 'dracula',
     ])
     expect(themePresetList.filter(preset => preset.group === 'editorial')).toHaveLength(4)
