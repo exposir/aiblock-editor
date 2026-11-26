@@ -16,6 +16,9 @@ import { isThemeMode, readThemeMode, syncTheme, themeLabels, THEME_MEDIA_QUERY, 
 import type { ThemeMode } from './theme/theme'
 import { PageEditor } from './workspace/PageEditor'
 import type { EditPage } from './workspace/PageEditor'
+import { PagePreview } from './workspace/PagePreview'
+import { DOCUMENT_MODE_STORAGE_KEY, readDocumentMode, toggleDocumentMode } from './workspace/document-mode'
+import type { DocumentMode } from './workspace/document-mode'
 import { WorkspaceDialog } from './workspace/WorkspaceDialog'
 import type { WorkspaceDialogRequest } from './workspace/WorkspaceDialog'
 import { WorkspaceNavigation } from './workspace/WorkspaceNavigation'
@@ -74,6 +77,30 @@ function ThemeControl({ mode, setMode }: Appearance) {
         <Icon size={14} aria-hidden="true" />
       </button>
     })}
+  </div>
+}
+
+const modeOrder = ['preview', 'edit'] as const
+const documentModeLabels: Record<DocumentMode, string> = { preview: '预览', edit: '编辑' }
+
+function ModeControl({ mode, setMode }: { readonly mode: DocumentMode; setMode: (mode: DocumentMode) => void }) {
+  const buttons = useRef<Array<HTMLButtonElement | null>>([])
+  const index = modeOrder.indexOf(mode)
+  return <div className="mode-segment" role="radiogroup" aria-label="文档模式" aria-orientation="horizontal"
+    style={{ '--mode-index': index } as CSSProperties}
+    onKeyDown={event => {
+      if (event.key !== 'ArrowLeft' && event.key !== 'ArrowRight') return
+      const next = (index + (event.key === 'ArrowRight' ? 1 : -1) + modeOrder.length) % modeOrder.length
+      event.preventDefault()
+      setMode(modeOrder[next]!)
+      buttons.current[next]?.focus()
+    }}>
+    <span className="mode-segment-thumb" aria-hidden="true" />
+    {modeOrder.map((option, optionIndex) => <button key={option} ref={button => { buttons.current[optionIndex] = button }}
+      type="button" role="radio" aria-checked={mode === option} aria-label={documentModeLabels[option]} title={documentModeLabels[option]}
+      tabIndex={mode === option ? 0 : -1} className="mode-option" onClick={() => setMode(option)}>
+      {documentModeLabels[option]}
+    </button>)}
   </div>
 }
 
@@ -141,9 +168,14 @@ function ExternalConflictNotice({ conflict, page, editor, keepLocal, reloadExter
   </div>
 }
 
-function Workspace({ workspace, anchor, saveFailed, loadFailed, retry, change, reset, stageContent, loadPage, deferTitle,
-  externalConflict, keepLocal, reloadExternal, searchContent, purgeTrash, holdEditorAssets, appearance }:
-  Omit<ReturnType<typeof useWorkspace>, 'workspace'> & { workspace: WorkspaceState<WorkspacePage>; appearance: Appearance },
+function Workspace({ workspace, anchor, saveFailed, loadFailed, retry, change, reset, stageContent, commitDraft, flush, loadPage, deferTitle,
+  externalConflict, keepLocal, reloadExternal, searchContent, purgeTrash, holdEditorAssets, appearance, documentMode, onDocumentModeChange }:
+  Omit<ReturnType<typeof useWorkspace>, 'workspace'> & {
+    workspace: WorkspaceState<WorkspacePage>
+    appearance: Appearance
+    documentMode: DocumentMode
+    onDocumentModeChange: (mode: DocumentMode) => void
+  },
 ) {
   const help = useRef<HTMLDialogElement>(null)
   const titleInput = useRef<HTMLInputElement>(null)
@@ -151,6 +183,7 @@ function Workspace({ workspace, anchor, saveFailed, loadFailed, retry, change, r
   const markdownInput = useRef<HTMLInputElement>(null)
   const toolsMenu = useRef<HTMLDivElement>(null)
   const copyTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined)
+  const modeSwitchScroll = useRef<number | null>(null)
   const [navigationOpen, setNavigationOpen] = useState(wideViewport)
   const [navigationView, setNavigationView] = useState<NavigationView>('pages')
   const [commentsOpen, setCommentsOpen] = useState(wideViewport)
@@ -202,6 +235,8 @@ function Workspace({ workspace, anchor, saveFailed, loadFailed, retry, change, r
 
   useEffect(() => () => clearTimeout(copyTimer.current), [])
 
+  useLayoutEffect(() => { modeSwitchScroll.current = null }, [documentMode])
+
   const editPage: EditPage = (id, patch, deferred) => {
     if (deferred && typeof patch !== 'function' && typeof patch.title === 'string') {
       deferTitle(id, patch.title)
@@ -231,6 +266,18 @@ function Workspace({ workspace, anchor, saveFailed, loadFailed, retry, change, r
     if (open && !wideViewport()) setNavigationOpen(false)
   }
 
+  function changeDocumentMode(next: DocumentMode) {
+    if (next === documentMode) return
+    modeSwitchScroll.current = window.scrollY
+    if (next === 'preview') {
+      if (editor && !editor.isDestroyed) stageContent(activePage.id, () => editor.getJSON())
+      commitDraft()
+      void flush()
+      setBinding(null)
+    }
+    onDocumentModeChange(next)
+  }
+
   function openPage(id: string) {
     change(current => activatePage(current, id))
     if (!wideViewport()) setNavigationOpen(false)
@@ -239,6 +286,7 @@ function Workspace({ workspace, anchor, saveFailed, loadFailed, retry, change, r
   function newPage(parentId: string | null) {
     const identity = newPageIdentity()
     focusTitleFor.current = identity.id
+    onDocumentModeChange('edit')
     change(current => addPage(current, identity, { parentId }))
     if (!wideViewport()) setNavigationOpen(false)
   }
@@ -306,6 +354,7 @@ function Workspace({ workspace, anchor, saveFailed, loadFailed, retry, change, r
     try {
       const file = await read()
       if (!file) return
+      onDocumentModeChange('edit')
       change(current => importMarkdownPage(current, schema, newPageIdentity(), file.name, file.contents))
       if (!wideViewport()) setNavigationOpen(false)
       setToolsOpen(false)
@@ -350,10 +399,23 @@ function Workspace({ workspace, anchor, saveFailed, loadFailed, retry, change, r
       case 'toggle-pages': toggleNavigation('pages'); break
       case 'toggle-outline': toggleNavigation('outline'); break
       case 'toggle-comments': showComments(!commentsOpen); break
+      case 'toggle-mode': changeDocumentMode(toggleDocumentMode(documentMode)); break
     }
   })
 
   useEffect(() => getDesktopBridge()?.onMenuCommand(command => runMenuCommand(command)), [])
+
+  useEffect(() => {
+    if (getDesktopBridge()) return
+    const shortcut = (event: KeyboardEvent) => {
+      if (event.repeat || !(event.metaKey || event.ctrlKey) || event.altKey || event.shiftKey ||
+          event.key.toLowerCase() !== 'e') return
+      event.preventDefault()
+      changeDocumentMode(toggleDocumentMode(documentMode))
+    }
+    window.addEventListener('keydown', shortcut)
+    return () => window.removeEventListener('keydown', shortcut)
+  }, [documentMode])
 
   async function insertDetachedImages(id: string, images: readonly ImageAttributes[], position: number) {
     const page = await loadPage(id)
@@ -405,8 +467,10 @@ function Workspace({ workspace, anchor, saveFailed, loadFailed, retry, change, r
               <ChevronRight size={13} aria-hidden="true" />
             </span>)}
           </div>}
-          <input ref={titleInput} aria-label="文档标题" aria-current="page" value={activePage.title} placeholder={DEFAULT_PAGE_TITLE}
-            onChange={event => editPage(activePage.id, { title: event.target.value }, true)} />
+          {documentMode === 'edit'
+            ? <input ref={titleInput} aria-label="文档标题" aria-current="page" value={activePage.title} placeholder={DEFAULT_PAGE_TITLE}
+              onChange={event => editPage(activePage.id, { title: event.target.value }, true)} />
+            : <h1 className="document-title-readonly" aria-label="文档标题" aria-current="page">{pageTitle(activePage)}</h1>}
         </nav>
         <div className="workspace-tools" role="group" aria-label="文档工具">
           <button type="button" className="icon-control" aria-label="页面侧栏" title="页面"
@@ -419,6 +483,7 @@ function Workspace({ workspace, anchor, saveFailed, loadFailed, retry, change, r
             aria-controls={commentsOpen ? 'document-comments' : undefined} onClick={() => showComments(!commentsOpen)}>
             <MessagesSquare size={18} aria-hidden="true" />
           </button>
+          <ModeControl mode={documentMode} setMode={changeDocumentMode} />
           <ThemeControl {...appearance} />
           <button type="button" className="icon-control" aria-label="快捷键" title="快捷键"
             onClick={() => help.current?.showModal()}><Keyboard size={18} aria-hidden="true" /></button>
@@ -451,19 +516,24 @@ function Workspace({ workspace, anchor, saveFailed, loadFailed, retry, change, r
                 event.target.value = ''
               }} />
           </div>
-          <button type="button" className="icon-control" aria-label="重置示例工作区" title="重置示例工作区"
-            onClick={() => setDialog({ kind: 'reset' })}><RotateCcw size={17} aria-hidden="true" /></button>
+          {documentMode === 'edit' && <button type="button" className="icon-control" aria-label="重置示例工作区" title="重置示例工作区"
+            onClick={() => setDialog({ kind: 'reset' })}><RotateCcw size={17} aria-hidden="true" /></button>}
         </div>
       </header>
       <div className="workspace" data-navigation={navigationOpen} data-comments={commentsOpen}>
         <WorkspaceNavigation workspace={workspace} view={navigationView} open={navigationOpen} editor={editor}
+          readOnly={documentMode === 'preview'} content={activePage.content}
           onView={selectNavigation} onClose={() => setNavigationOpen(false)} onActivate={openPage} onCreate={newPage}
           onIcon={(id, icon) => editPage(id, { icon })} onAction={(action, id) => void pageAction(action, id)}
           searchContent={searchContent} onRestore={id => change(current => restoreTrashedPage(current, id))}
           onPurge={id => setDialog({ kind: 'purge', pageId: id })} onEmptyTrash={() => setDialog({ kind: 'empty-trash' })} />
-        {loadedPage ? <PageEditor key={activePage.id} page={loadedPage} extensions={extensions} anchor={anchor} commentsOpen={commentsOpen}
-          onCommentsOpen={showComments} onEditorReady={editorReady} onEdit={editPage} onStageContent={stageContent} onHoldImageAssets={holdEditorAssets}
-          onImport={file => void chooseMarkdownFile(file)} onDetachedImages={insertDetachedImages} onNotice={setNotice} />
+        {loadedPage ? documentMode === 'preview'
+          ? <PagePreview key={`preview-${activePage.id}`} page={loadedPage} anchor={anchor} commentsOpen={commentsOpen}
+            onCommentsOpen={showComments} restoreScrollY={modeSwitchScroll.current} />
+          : <PageEditor key={`edit-${activePage.id}`} page={loadedPage} extensions={extensions} anchor={anchor} commentsOpen={commentsOpen}
+            onCommentsOpen={showComments} onEditorReady={editorReady} onEdit={editPage} onStageContent={stageContent} onHoldImageAssets={holdEditorAssets}
+            onImport={file => void chooseMarkdownFile(file)} onDetachedImages={insertDetachedImages} onNotice={setNotice}
+            restoreScrollY={modeSwitchScroll.current} />
           : <main className="document-surface" aria-busy={!loadFailed}>
             <div className="workspace-load" role="status">
               {loadFailed ? <>无法读取页面正文。 <button type="button" onClick={retry}>重试</button></> : '正在加载页面…'}
@@ -498,6 +568,7 @@ function Workspace({ workspace, anchor, saveFailed, loadFailed, retry, change, r
           <div><dt>撤销</dt><dd><kbd>Cmd / Ctrl</kbd> + <kbd>Z</kbd></dd></div>
           <div><dt>折叠块快捷输入</dt><dd><kbd>&gt;&gt; </kbd></dd></div>
           <div><dt>高亮块快捷输入</dt><dd><kbd>[! </kbd></dd></div>
+          <div><dt>切换预览 / 编辑</dt><dd><kbd>Cmd / Ctrl</kbd> + <kbd>E</kbd></dd></div>
           <div><dt>切换深浅色</dt><dd><kbd>Cmd / Ctrl</kbd> + <kbd>Shift</kbd> + <kbd>D</kbd></dd></div>
           <div><dt>智能粘贴 Markdown</dt><dd><kbd>Cmd / Ctrl</kbd> + <kbd>V</kbd>，纯文本生效</dd></div>
         </dl>
@@ -506,27 +577,37 @@ function Workspace({ workspace, anchor, saveFailed, loadFailed, retry, change, r
   )
 }
 
-function WorkspaceApp({ persistence, appearance }: { persistence?: WorkspacePersistence; appearance: Appearance }) {
+function WorkspaceApp({ persistence, appearance, documentMode, onDocumentModeChange }: {
+  persistence?: WorkspacePersistence
+  appearance: Appearance
+  documentMode: DocumentMode
+  onDocumentModeChange: (mode: DocumentMode) => void
+}) {
   const store = useWorkspace(schema, persistence)
   if (!store.workspace) return <div className="workspace-load" role="status">
     {store.loadFailed ? <>{persistence ? '无法读取桌面工作区。' : '无法读取工作区。'}
       <button type="button" onClick={store.retry}>重试</button></> : '正在加载工作区…'}
   </div>
-  return <Workspace key={store.revision} {...store} workspace={store.workspace} appearance={appearance} />
+  return <Workspace key={store.revision} {...store} workspace={store.workspace} appearance={appearance}
+    documentMode={documentMode} onDocumentModeChange={onDocumentModeChange} />
 }
 
 export default function App() {
   const bridge = getDesktopBridge()
-  const [mode, setMode] = useState(() => readThemeMode(window))
-  useLayoutEffect(() => syncTheme(window, mode), [mode])
+  const [themeMode, setThemeMode] = useState(() => readThemeMode(window))
+  const [documentMode, setDocumentMode] = useState(() => readDocumentMode(window))
+  useLayoutEffect(() => syncTheme(window, themeMode), [themeMode])
+  useEffect(() => {
+    try { localStorage.setItem(DOCUMENT_MODE_STORAGE_KEY, documentMode) } catch { /* Mode still applies to this tab. */ }
+  }, [documentMode])
   useEffect(() => bridge?.onMenuCommand(command => {
     if (command === 'toggle-theme') {
-      setMode(current => toggleResolvedTheme(current, window.matchMedia(THEME_MEDIA_QUERY).matches))
+      setThemeMode(current => toggleResolvedTheme(current, window.matchMedia(THEME_MEDIA_QUERY).matches))
       return
     }
     if (!command.startsWith('theme-')) return
     const selection = command.slice('theme-'.length)
-    if (isThemeMode(selection)) setMode(selection)
+    if (isThemeMode(selection)) setThemeMode(selection)
   }), [bridge])
   useEffect(() => {
     if (bridge) return
@@ -534,12 +615,13 @@ export default function App() {
       if (event.repeat || !(event.metaKey || event.ctrlKey) || !event.shiftKey || event.altKey ||
           event.key.toLowerCase() !== 'd') return
       event.preventDefault()
-      setMode(current => toggleResolvedTheme(current, window.matchMedia(THEME_MEDIA_QUERY).matches))
+      setThemeMode(current => toggleResolvedTheme(current, window.matchMedia(THEME_MEDIA_QUERY).matches))
     }
     window.addEventListener('keydown', shortcut)
     return () => window.removeEventListener('keydown', shortcut)
   }, [bridge])
 
-  const appearance = { mode, setMode }
-  return <WorkspaceApp persistence={bridge} appearance={appearance} />
+  const appearance = { mode: themeMode, setMode: setThemeMode }
+  return <WorkspaceApp persistence={bridge} appearance={appearance} documentMode={documentMode}
+    onDocumentModeChange={setDocumentMode} />
 }

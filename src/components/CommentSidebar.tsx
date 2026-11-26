@@ -10,17 +10,18 @@ interface CommentSidebarProps {
   readonly onResolve: (id: string) => void
   readonly onDelete: (id: string) => void
   readonly onClose: () => void
+  readonly readOnly?: boolean
 }
 
-function ThreadCard({ thread, chosen, onLocate, onReply, onResolve, onDelete }:
+function ThreadCard({ thread, chosen, readOnly, onLocate, onReply, onResolve, onDelete }:
   Pick<CommentSidebarProps, 'onLocate' | 'onReply' | 'onResolve' | 'onDelete'> &
-  { thread: CommentThread; chosen: boolean }) {
+  Pick<CommentSidebarProps, 'readOnly'> & { thread: CommentThread; chosen: boolean }) {
   const [reply, setReply] = useState('')
   const input = useRef<HTMLTextAreaElement>(null)
   const draft = !thread.messages.length
   useEffect(() => {
-    if (chosen && draft) input.current?.focus({ preventScroll: true })
-  }, [chosen, draft])
+    if (!readOnly && chosen && draft) input.current?.focus({ preventScroll: true })
+  }, [chosen, draft, readOnly])
 
   return (
     <article className="comment-thread" data-active={chosen} data-resolved={thread.resolved}>
@@ -35,7 +36,7 @@ function ThreadCard({ thread, chosen, onLocate, onReply, onResolve, onDelete }:
         </div>
       ))}
       {thread.resolved && <p className="comment-resolved"><Check size={13} aria-hidden="true" /> 已解决</p>}
-      {!thread.resolved && <form className="comment-form" onSubmit={event => {
+      {!readOnly && !thread.resolved && <form className="comment-form" onSubmit={event => {
         event.preventDefault()
         if (!reply.trim()) return
         onReply(thread.id, reply.trim())
@@ -46,7 +47,7 @@ function ThreadCard({ thread, chosen, onLocate, onReply, onResolve, onDelete }:
           onChange={event => setReply(event.target.value)} />
         <button type="submit" className="primary-control" disabled={!reply.trim()}>{draft ? '发表评论' : '回复'}</button>
       </form>}
-      <div className="comment-actions">
+      {!readOnly && <div className="comment-actions">
         {!draft && !thread.resolved &&
           <button className="icon-control" type="button" aria-label="解决评论" title="解决评论" onClick={() => onResolve(thread.id)}>
             <Check size={15} aria-hidden="true" />
@@ -55,12 +56,12 @@ function ThreadCard({ thread, chosen, onLocate, onReply, onResolve, onDelete }:
           title={draft ? '取消评论' : '删除评论'} onClick={() => onDelete(thread.id)}>
           <Trash2 size={15} aria-hidden="true" />
         </button>
-      </div>
+      </div>}
     </article>
   )
 }
 
-export function CommentSidebar({ threads, active, onClose, ...actions }: CommentSidebarProps) {
+export function CommentSidebar({ threads, active, readOnly = false, onClose, ...actions }: CommentSidebarProps) {
   return (
     <aside className="workspace-sidebar comment-sidebar" id="document-comments" aria-label="评论">
       <div className="sidebar-heading"><MessageCircle size={16} aria-hidden="true" /><h2>评论</h2>
@@ -70,7 +71,8 @@ export function CommentSidebar({ threads, active, onClose, ...actions }: Comment
       </div>
       <div className="comment-list">
         {threads.length ? threads.map(thread => <ThreadCard key={thread.id} thread={thread}
-          chosen={thread.id === active} {...actions} />) : <p className="sidebar-empty">选中文字后可发表评论</p>}
+          chosen={thread.id === active} readOnly={readOnly} {...actions} />)
+          : <p className="sidebar-empty">{readOnly ? '预览中没有评论' : '选中文字后可发表评论'}</p>}
       </div>
     </aside>
   )

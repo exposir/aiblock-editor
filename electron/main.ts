@@ -172,6 +172,7 @@ function installMenu(setTheme: (mode: ThemeMode) => Promise<void>) {
         action('切换页面侧栏', 'toggle-pages', 'CmdOrCtrl+Shift+1'),
         action('切换目录侧栏', 'toggle-outline', 'CmdOrCtrl+Shift+2'),
         action('切换评论侧栏', 'toggle-comments', 'CmdOrCtrl+Shift+3'),
+        action('切换预览 / 编辑', 'toggle-mode', 'CmdOrCtrl+E'),
         { type: 'separator' },
         {
           label: '外观',

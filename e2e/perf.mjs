@@ -59,7 +59,7 @@ const gallery = '全图种与公式复杂示例'
 const stress = '性能基准长文档'
 const editorReady = () => page(() => !!document.querySelector('.ProseMirror')?.editor?.isInitialized)
 
-async function openPage(title) {
+async function openPage(title, mode = 'edit') {
   const start = await page(title => {
     const now = performance.now()
     const button = [...document.querySelectorAll('.workspace-navigation button')]
@@ -68,35 +68,43 @@ async function openPage(title) {
     button.click()
     return now
   }, title)
-  await until(async () => await editorReady() && await page(title =>
-    document.querySelector('input[aria-label="文档标题"]')?.value === title, title), title)
+  await until(async () => page(({ title, mode }) =>
+    (mode === 'preview'
+      ? !!document.querySelector('article[aria-label="文档预览"]') &&
+        document.querySelector('[aria-label="文档标题"]')?.textContent === title
+      : !!document.querySelector('.ProseMirror')?.editor?.isInitialized &&
+        document.querySelector('input[aria-label="文档标题"]')?.value === title), { title, mode }), title)
   await frame()
   return Math.round(await page(() => performance.now()) - start)
 }
 
 function startMeasurements() {
   const root = document.querySelector('.ProseMirror')
-  const view = root.editor.view
-  const editor = root.editor
+  const view = root?.editor?.view
+  const editor = root?.editor
   const result = { rects: 0, writes: 0, json: 0, keys: [], frames: [] }
   const rect = Element.prototype.getBoundingClientRect
   Element.prototype.getBoundingClientRect = function () {
     result.rects++
     return rect.call(this)
   }
-  const json = editor.getJSON
-  editor.getJSON = function () {
-    result.json++
-    return json.call(this)
+  const json = editor?.getJSON
+  if (editor) {
+    editor.getJSON = function () {
+      result.json++
+      return json.call(this)
+    }
   }
-  const dispatch = view.props.dispatchTransaction
-  view.setProps({ dispatchTransaction(tr) {
-    const start = performance.now()
-    dispatch.call(view, tr)
-    if (tr.docChanged) result.keys.push(performance.now() - start)
-  } })
+  const dispatch = view?.props.dispatchTransaction
+  if (view) {
+    view.setProps({ dispatchTransaction(tr) {
+      const start = performance.now()
+      dispatch.call(view, tr)
+      if (tr.docChanged) result.keys.push(performance.now() - start)
+    } })
+  }
   const observer = new MutationObserver(records => { result.writes += records.length })
-  observer.observe(document.querySelector('[data-document-overlays]'), {
+  observer.observe(document.querySelector('[data-document-overlays]') ?? document.body, {
     subtree: true, attributes: true, attributeFilter: ['style'],
   })
   let previous, raf
@@ -110,8 +118,8 @@ function startMeasurements() {
     cancelAnimationFrame(raf)
     observer.disconnect()
     Element.prototype.getBoundingClientRect = rect
-    editor.getJSON = json
-    view.setProps({ dispatchTransaction: dispatch })
+    if (editor) editor.getJSON = json
+    if (view) view.setProps({ dispatchTransaction: dispatch })
     delete window.finishPerfSample
     return result
   }
@@ -140,7 +148,7 @@ async function typeSample() {
   return { transactions: keys.length, p50Ms: percentile(keys, .5), p95Ms: percentile(keys, .95), json, rects, writes }
 }
 
-async function scrollSample(selector) {
+async function scrollSample(selector, { steps = 25, delta = 140 } = {}) {
   const point = await page(selector => {
     const element = document.querySelector(selector)
     element.scrollIntoView({ block: 'center', behavior: 'instant' })
@@ -150,13 +158,19 @@ async function scrollSample(selector) {
   await move(point)
   await frame()
   await page(startMeasurements)
-  for (let i = 0; i < 25; i++) {
-    await wheel(point, 140)
+  for (let i = 0; i < steps; i++) {
+    await wheel(point, delta)
     await delay(8)
   }
   await frame()
   const { frames, rects, writes } = await page(() => window.finishPerfSample())
-  return { p95Ms: percentile(frames, .95), longFrames: frames.filter(ms => ms > 20).length, rects, writes }
+  return {
+    p95Ms: percentile(frames, .95),
+    maxMs: frames.length ? Number(Math.max(...frames).toFixed(2)) : null,
+    longFrames: frames.filter(ms => ms > 20).length,
+    rects,
+    writes,
+  }
 }
 
 async function checkboxAlignment() {
@@ -185,8 +199,8 @@ async function themeSample(mode) {
   const start = await page(mode => {
     const old = document.querySelector('[data-preview-language="mermaid"] img').src
     window.perfPreviousSvg = old
-    const button = [...document.querySelectorAll('button[aria-label^="外观："]')]
-      .find(button => button.getAttribute('aria-label').endsWith('切换为' + mode))
+    const button = document.querySelector(`button.theme-option[aria-label="${mode}"]`)
+    if (!button) throw new Error('Missing theme option: ' + mode)
     const start = performance.now()
     button.click()
     return start
@@ -201,6 +215,30 @@ async function themeSample(mode) {
   return { firstPaintMs: firstPaint, visibleSvgMs: Math.round(await page(() => performance.now()) - start) }
 }
 
+async function setDocumentMode(mode) {
+  return page(mode => {
+    const key = Object.keys(localStorage).find(key => key.endsWith('.mode.v1'))
+    if (!key) throw new Error('Missing document mode storage key')
+    localStorage.setItem(key, mode)
+  }, mode)
+}
+
+async function switchDocumentMode(mode) {
+  const label = mode === 'preview' ? '预览' : '编辑'
+  const start = await page(label => {
+    const button = document.querySelector(`button.mode-option[aria-label="${label}"]`)
+    if (!button) throw new Error('Missing mode option: ' + label)
+    const at = performance.now()
+    button.click()
+    return at
+  }, label)
+  await until(() => page(mode => mode === 'preview'
+    ? !!document.querySelector('article[aria-label="文档预览"]')
+    : !!document.querySelector('.ProseMirror')?.editor?.isInitialized, mode), 'Document mode did not switch', 15000)
+  await frame()
+  return Math.round(await page(() => performance.now()) - start)
+}
+
 async function counters() {
   await send('HeapProfiler.collectGarbage')
   const dom = await send('Memory.getDOMCounters')
@@ -209,24 +247,52 @@ async function counters() {
   return { ...dom, mountedNodes, heapMiB: Number((usedSize / 2 ** 20).toFixed(2)) }
 }
 
-async function seedAndOpen(mode) {
+async function reloadCurrentDocument(mode) {
+  await setDocumentMode(mode)
+  await send('Page.reload')
+  await until(() => page(mode => mode === 'preview'
+    ? !!document.querySelector('article[aria-label="文档预览"]')
+    : !!document.querySelector('.ProseMirror')?.editor?.isInitialized, mode), 'Document did not reload in ' + mode, 30000)
+  await frame()
+  return Math.round(await page(() => performance.now()))
+}
+
+async function seedAndOpen(mode, documentMode = 'edit') {
   await delay(550) // Allow the current editor's mount normalization to reach storage before replacing the fixture.
-  const id = await page(async mode => {
+  const id = await page(async ({ mode, documentMode }) => {
     let idCounter = 0
     const block = (type, content, attrs = {}) => ({ type, attrs: { ...attrs, blockId: 'perf-' + ++idCounter }, ...(content ? { content } : {}) })
-    const text = value => ({ type: 'text', text: value })
-    const p = value => block('paragraph', [text(value)])
+    const text = (value, marks) => ({ type: 'text', text: value, ...(marks ? { marks } : {}) })
+    const bold = value => text(value, [{ type: 'bold' }])
+    const p = (value, strong = false) => block('paragraph', [strong ? bold(value) : text(value)])
     const tasks = i => block('taskList', [0, 1].map(n => block('taskItem', [p(`验收 ${i}.${n}`)], { checked: n === 0 })))
-    const callout = i => block('callout', [p('发布须经复核 ' + i)], { theme: 'blue', icon: '💡' })
+    const table = i => block('table', [
+      block('tableRow', [
+        block('tableHeader', [p('检查项')], { colspan: 1, rowspan: 1, colwidth: [120] }),
+        block('tableHeader', [p('状态')], { colspan: 1, rowspan: 1, colwidth: [120] }),
+      ]),
+      block('tableRow', [
+        block('tableCell', [p('版本 ' + i)], { colspan: 1, rowspan: 1 }),
+        block('tableCell', [p('通过')], { colspan: 1, rowspan: 1 }),
+      ]),
+    ])
+    const callout = i => block('callout', [
+      p('发布须经复核 ' + i, true), ...(i % 10 === 0 ? [table(i)] : []),
+    ], { theme: 'blue', icon: '💡' })
     const toggle = i => block('toggle', [
       block('toggleSummary', [text('回滚 ' + i)]), block('toggleContent', [p('恢复上一版本 ' + i)]),
     ], { open: i % 2 === 0 })
     const columns = i => block('columnList', [50, 50].map(width => block('column', [p('步骤 ' + i)], { width })))
     const shortCode = i => block('codeBlock', [text('const value = { deploy: true, revision: ' + i + ' };')], { language: 'typescript' })
+    const richCode = (i, language, source) => block('codeBlock', [text(source + i)], { language })
     const content = mode === 'xl'
       ? Array.from({ length: 900 }, (_, i) => [
-        p('编辑起点与正文。' + i), i % 3 === 0 ? block('heading', [text('回归测试 ' + i)], { level: 2 }) : p('阅读连续正文与标记。'),
-        tasks(i), i % 3 ? callout(i) : columns(i), i % 2 ? toggle(i) : shortCode(i),
+        p('编辑起点与正文。' + i, i % 2 === 0),
+        i % 3 === 0 ? block('heading', [text('回归测试 ' + i)], { level: 2 }) : p('阅读连续正文与标记。', i % 4 === 0),
+        tasks(i), i % 3 ? callout(i) : columns(i),
+        i % 2 ? toggle(i)
+          : i % 4 === 0 ? shortCode(i)
+            : i % 8 === 0 ? richCode(i, 'mermaid', 'flowchart LR\nA-->B\n') : richCode(i, 'math', '\\sum_{j=1}^{n} j\n'),
       ]).flat()
       : mode === 'code'
         ? [block('codeBlock', [text(Array.from({ length: 500 }, (_, i) => [
@@ -238,7 +304,7 @@ async function seedAndOpen(mode) {
         ].join('\n')).join('\n'))], { language: 'typescript' })]
         : Array.from({ length: 200 }, (_, i) => p('图片压测混合正文 ' + i))
     if (mode === 'xl') {
-      const omitted = 17074 - countNodes({ content })
+      const omitted = 18121 - countNodes({ content })
       if (omitted < 0) {
         const plain = content.filter(node => node.type === 'paragraph' && node.content[0]?.text === '阅读连续正文与标记。')
         for (const node of plain.slice(0, -omitted)) delete node.content
@@ -273,18 +339,25 @@ async function seedAndOpen(mode) {
     })
     db.close()
     history.replaceState(null, '', '#page=' + id)
+    const modeKey = Object.keys(localStorage).find(key => key.endsWith('.mode.v1'))
+    if (modeKey) localStorage.setItem(modeKey, documentMode)
     return id
-  }, mode)
+  }, { mode, documentMode })
   await send('Page.reload')
-  await until(() => page(id => location.hash === '#page=' + id &&
-    !!document.querySelector('.ProseMirror')?.editor?.isInitialized, id), 'Seeded document did not open', 30000)
+  await until(() => page(({ id, documentMode }) => location.hash === '#page=' + id &&
+    (documentMode === 'preview'
+      ? !!document.querySelector('article[aria-label="文档预览"]')
+      : !!document.querySelector('.ProseMirror')?.editor?.isInitialized), { id, documentMode }), 'Seeded document did not open', 30000)
     .catch(async error => {
-      const state = await page(() => ({ hash: location.hash, title: document.querySelector('input[aria-label="文档标题"]')?.value,
-        status: [...document.querySelectorAll('[role=status]')].map(node => node.textContent), blocks: document.querySelector('.ProseMirror')?.children.length }))
-      throw new Error(error.message + ' (' + id + '): ' + JSON.stringify(state))
+      const state = await page(() => ({ hash: location.hash,
+        title: document.querySelector('input[aria-label="文档标题"]')?.value ?? document.querySelector('[aria-label="文档标题"]')?.textContent,
+        status: [...document.querySelectorAll('[role=status]')].map(node => node.textContent),
+        blocks: document.querySelector('.ProseMirror')?.children.length,
+        preview: !!document.querySelector('article[aria-label="文档预览"]') }))
+      throw new Error(error.message + ' (' + await page(() => location.hash) + '): ' + JSON.stringify(state))
     })
   await frame()
-  return page(() => Math.round(performance.now()))
+  return page(documentMode => ({ mode: documentMode, ms: Math.round(performance.now()) }), documentMode)
 }
 
 function ceiling(value, max, metric) {
@@ -292,18 +365,18 @@ function ceiling(value, max, metric) {
 }
 
 async function xlSample() {
-  const firstOpenMs = await seedAndOpen('xl')
+  const firstOpenMs = (await seedAndOpen('xl', 'edit')).ms
   const shape = await page(() => {
     const doc = document.querySelector('.ProseMirror').editor.state.doc
     let nodes = 1
     doc.descendants(() => { nodes++ })
     return { blocks: doc.childCount, nodes }
   })
-  assert.deepEqual(shape, { blocks: 4500, nodes: 17074 })
-  const loaded = await counters()
-  const controls = await page(() => document.querySelectorAll('.floating-block-control, .code-control-strip').length)
-  await openPage('文档协作与发布手册')
-  const switchBackMs = await openPage('XL 性能工作区')
+  assert.deepEqual(shape, { blocks: 4500, nodes: 18121 })
+  const editLoaded = await counters()
+  const editControls = await page(() => document.querySelectorAll('.floating-block-control, .code-control-strip').length)
+  await openPage('文档协作与发布手册', 'edit')
+  const editSwitchBackMs = await openPage('XL 性能工作区', 'edit')
   await page(() => {
     document.querySelector('button[aria-label="目录侧栏"]').click()
     const root = document.querySelector('.ProseMirror')
@@ -332,29 +405,86 @@ async function xlSample() {
   await frame()
   const hover = await page(start => ({ ms: +(performance.now() - start).toFixed(2),
     visible: !!document.querySelector('.block-handles'), ...window.finishPerfSample() }), tick)
-  const scroll = await scrollSample('.ProseMirror pre')
+  const editScroll = await scrollSample('.ProseMirror pre')
   const editableControls = await page(() => document.querySelectorAll('.ProseMirror :is(button,input,select,textarea)').length)
   assert.equal(editableControls, 0)
-  const summary = { shape, firstOpenMs, switchBackMs, loaded, controls, editableControls,
+  const edit = { shape, firstOpenMs, switchBackMs: editSwitchBackMs, loaded: editLoaded, controls: editControls, editableControls,
     enter: { p50Ms: percentile(enter.keys, .5), p95Ms: percentile(enter.keys, .95), frameP95Ms: percentile(enter.frames, .95), rects: enter.rects },
-    hover: { ms: hover.ms, rects: hover.rects, visible: hover.visible }, scroll }
+    hover: { ms: hover.ms, rects: hover.rects, visible: hover.visible }, scroll: editScroll }
   ceiling(firstOpenMs, 1500, 'XL first open (ms)')
-  ceiling(switchBackMs, 1000, 'XL switch back (ms)')
-  ceiling(controls, 100, 'XL mounted tools')
-  ceiling(loaded.jsEventListeners, 2000, 'XL event listeners')
-  ceiling(summary.enter.p95Ms, 30, 'XL Enter transaction P95 (ms)')
-  ceiling(summary.enter.frameP95Ms, 55, 'XL Enter frame P95 (ms)')
-  ceiling(summary.enter.rects, 2500, 'XL Enter geometry reads')
+  ceiling(editSwitchBackMs, 1000, 'XL edit switch back (ms)')
+  ceiling(editControls, 100, 'XL mounted edit tools')
+  ceiling(editLoaded.jsEventListeners, 2000, 'XL edit event listeners')
+  ceiling(edit.enter.p95Ms, 30, 'XL Enter transaction P95 (ms)')
+  ceiling(edit.enter.frameP95Ms, 55, 'XL Enter frame P95 (ms)')
+  ceiling(edit.enter.rects, 2500, 'XL Enter geometry reads')
   assert.ok(hover.visible, 'The first pointer move must reveal the block handle')
   ceiling(hover.rects, 1200, 'XL first hover geometry reads')
   ceiling(hover.ms, 160, 'XL first hover (ms)')
-  ceiling(scroll.p95Ms, 24, 'XL scroll frame P95 (ms)')
-  ceiling(scroll.longFrames, 6, 'XL scroll long frames')
-  assert.equal(scroll.writes, 0, 'Stationary XL wheel must not write overlay styles')
+  ceiling(editScroll.p95Ms, 24, 'XL edit scroll frame P95 (ms)')
+  ceiling(editScroll.longFrames, 6, 'XL edit scroll long frames')
+  assert.equal(editScroll.writes, 0, 'Stationary XL wheel must not write overlay styles')
+
+  const modeToPreviewMs = await switchDocumentMode('preview')
+  const previewColdOpenMs = await reloadCurrentDocument('preview')
+  const previewLoaded = await counters()
+  await openPage('文档协作与发布手册', 'preview')
+  const previewSwitchBackMs = await openPage('XL 性能工作区', 'preview')
+  const previewPoint = await page(() => {
+    const paragraph = document.querySelectorAll('.document-preview p')[26]
+    if (!paragraph) throw new Error('Missing preview paragraph')
+    paragraph.scrollIntoView({ block: 'center', behavior: 'instant' })
+    const rect = paragraph.getBoundingClientRect()
+    return { x: Math.round(rect.left + rect.width / 2), y: Math.round(rect.top + rect.height / 2) }
+  })
+  await frame()
+  await page(startMeasurements)
+  const previewHoverStart = await page(() => performance.now())
+  await move(previewPoint)
+  await frame()
+  const previewHover = await page(start => ({
+    ms: +(performance.now() - start).toFixed(2), ...window.finishPerfSample(),
+  }), previewHoverStart)
+  const previewScroll = await scrollSample('.document-preview pre', { steps: 60, delta: 330 })
+  const previewDom = await page(() => ({
+    article: document.querySelectorAll('article[aria-label="文档预览"]').length,
+    proseMirror: document.querySelectorAll('.ProseMirror').length,
+    contentEditable: document.querySelectorAll('[contenteditable]').length,
+    textboxes: document.querySelectorAll('[role="textbox"]').length,
+    overlays: document.querySelectorAll('[data-document-overlays], .bubble-toolbar, .table-controls-layer, .image-controls, .inline-math-editor').length,
+    chunks: document.querySelectorAll('.preview-chunk').length,
+  }))
+  const modeToEditMs = await switchDocumentMode('edit')
+  const modeBackToPreviewMs = await switchDocumentMode('preview')
+  const preview = {
+    coldOpenMs: previewColdOpenMs,
+    switchBackMs: previewSwitchBackMs,
+    loaded: previewLoaded,
+    modeToPreviewMs,
+    modeToEditMs,
+    modeBackToPreviewMs,
+    hover: { ms: previewHover.ms, rects: previewHover.rects },
+    scroll: previewScroll,
+    dom: previewDom,
+  }
+  ceiling(previewColdOpenMs, 230, 'XL preview cold open (ms)')
+  ceiling(previewSwitchBackMs, 130, 'XL preview switch back (ms)')
+  ceiling(previewLoaded.jsEventListeners, 300, 'XL preview event listeners')
+  assert.ok(previewLoaded.heapMiB < editLoaded.heapMiB,
+    `XL preview heap ${previewLoaded.heapMiB} MiB must be below edit ${editLoaded.heapMiB} MiB`)
+  assert.ok(previewLoaded.mountedNodes < editLoaded.mountedNodes,
+    `XL preview DOM ${previewLoaded.mountedNodes} must be below edit ${editLoaded.mountedNodes}`)
+  assert.equal(previewHover.rects, 0, 'XL preview hover must not read geometry')
+  ceiling(previewScroll.p95Ms, 17.5, 'XL preview scroll frame P95 (ms)')
+  ceiling(previewScroll.maxMs, 50, 'XL preview scroll max frame (ms)')
+  ceiling(previewScroll.longFrames, 1, 'XL preview scroll long frames')
+  assert.equal(previewScroll.writes, 0, 'XL preview scroll must not write styles')
+  assert.deepEqual({ ...previewDom, chunks: undefined },
+    { article: 1, proseMirror: 0, contentEditable: 0, textboxes: 0, overlays: 0, chunks: undefined })
+  assert.ok(previewDom.chunks >= Math.ceil(shape.blocks / 24))
+  const summary = { edit, preview }
   if (process.argv.includes('--geometry-only')) return summary
-  await page(() => document.querySelector('button[aria-label="页面侧栏"]').click())
-  await openPage('文档协作与发布手册')
-  const codeOpenMs = await seedAndOpen('code')
+  const codeOpenMs = (await seedAndOpen('code', 'edit')).ms
   await page(() => {
     const root = document.querySelector('.ProseMirror')
     root.editor.commands.setTextSelection(8)
@@ -377,7 +507,7 @@ async function xlSample() {
 }
 
 async function imageSample() {
-  const mixedTextOpenMs = await seedAndOpen('images')
+  const mixedTextOpenMs = (await seedAndOpen('images', 'edit')).ms
   const bytes = await page(async () => {
     const dt = new DataTransfer()
     const canvas = document.createElement('canvas')
@@ -551,11 +681,9 @@ try {
   const firstSvgMs = await page(() => performance.now())
   const initialPreviews = await page(() => document.querySelectorAll('[data-preview-language="mermaid"] img').length)
   const galleryReadyMs = firstSvgMs - galleryStart
-  await page(() => document.querySelector('button[aria-label^="外观："]').click())
-  await frame()
   const dark = await themeSample('深色')
   await renderGallery(page, until, 'dark')
-  const light = await themeSample('跟随系统')
+  const light = await themeSample('浅色')
   await renderGallery(page, until, 'light')
   const diagram = await scrollSample('[data-preview-language="mermaid"] img')
   const toolbar = await scrollSample('.code-control-strip[data-preview-tools] button[aria-label="复制源码"]')

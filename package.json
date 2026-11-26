@@ -1,6 +1,6 @@
 {
   "name": "aiblock-editor",
-  "version": "0.2.1",
+  "version": "0.2.2",
   "description": "A local-first block document editor with an AI-friendly CLI and desktop app.",
   "author": "AIBlock Editor contributors",
   "repository": {

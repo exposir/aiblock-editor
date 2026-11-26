@@ -1,6 +1,6 @@
 # 架构与实测
 
-编辑器使用 TipTap 和 ProseMirror 管理正文与选区。Web、桌面端和 CLI 共享文档 Schema。CLI 从纯 Node 入口调用 Markdown 编解码器和桌面文件存储，页面预览仍在编辑器里运行。
+编辑器使用 TipTap 和 ProseMirror 管理正文与选区。Web、桌面端和 CLI 共享文档 Schema。CLI 从纯 Node 入口调用 Markdown 编解码器和桌面文件存储。预览模式不创建 ProseMirror 实例，而是用独立 React 渲染器直接消费页面 JSON。
 
 ## 运行边界
 
@@ -43,6 +43,12 @@ Web 使用 IndexedDB 的 `meta`、`pages` 和 `assets`。桌面端使用 `index.
 
 块控件、代码工具条和 Mermaid 在靠近视口时加载，行内公式也在滚近后渲染。图片用固有比例预留高度，近视口挂载位图，离屏释放 URL 租约。长代码超过 120 行或 4096 个文本字符时，在内联 Blob Worker 中计算语法高亮。Worker 超时会终止，后续编辑可以重试，旧文档结果会被丢弃。Worker 调度位于 `src/editor/extensions/long-code-highlight.ts`。
 
+## 零 ProseMirror 静态预览
+
+`src/workspace/PagePreview.tsx` 在预览模式替代 `PageEditor`。正文由 `src/editor/preview/DocumentPreview.tsx` 直接按 JSON 节点和 Mark 生成 React DOM，不挂载 EditorView、contentEditable 或编辑浮层。预览页把顶层块每 24 个包入一个 `.preview-chunk`，通过 `content-visibility: auto` 与固有高度跳过离屏布局。
+
+折叠、复制、代码源码切换统一由 `.document-preview` 的单个 click 委托处理，不保存逐块 React state。普通代码高亮使用有界 LRU 缓存和空闲帧队列；滚动期间暂停增强任务，避免在输入帧内做语法分析。Mermaid、KaTeX、图片和行内公式共享一个容器级观察器，只在近视口时激活。目录和评论定位直接查询 `[data-block-id]` / `[data-comment-id]`。
+
 ## Chromium 实测
 
 这组历史基准在 Apple M5 Pro 的 macOS arm64 环境上，用无头 Chromium 运行仓库生产构建。下表来自同一次 `e2e/perf.mjs --xl --images` 和随后的 `e2e/scroll.mjs` 测量，时延随设备和负载变化。
@@ -58,5 +64,24 @@ Web 使用 IndexedDB 的 `meta`、`pages` 和 `assets`。桌面端使用 `index.
 | 独立滚动验收 | 静止鼠标时 **0** 次几何读取与样式写入，浮层对齐误差 **0 px**。 |
 
 连续 Enter 的帧间隔仍可超过 60 Hz 的一帧预算。滚动与键入分别采样，P95 也与单次最大耗时不同。
+
+### XL 预览与编辑对比
+
+当前生产构建在 Apple M5 Pro、无头 Chromium、同一份 4,500 个顶层块 / 18,121 个节点文档上测量。两边使用相同视口、滚动距离和采样器；预览模式不创建 ProseMirror。
+
+| 指标 | 编辑模式 | 预览模式 |
+| --- | ---: | ---: |
+| 冷开 | 534 ms | **152 ms** |
+| 切页返回 | 399 ms | **83 ms** |
+| 模式切换（预览→编辑 / 编辑→预览） | — | 477 ms / **164 ms** |
+| 快速滚动帧 P95 | 16.7 ms | 16.8 ms |
+| 快速滚动最大帧 | 33.4 ms（1 个长帧） | 50 ms（1 个长帧） |
+| 首次 Hover 几何读取 | 3 次 | **0 次** |
+| DOM 节点 | 35,437 | **29,056** |
+| JS Event Listeners | 471 | **193** |
+| JS Heap | 24.01 MiB | **21.85 MiB** |
+| ProseMirror / contentEditable / textbox | 1 / 1 / 1 | **0 / 0 / 0** |
+
+测量入口为 `node e2e/perf.mjs <vite-preview-url> --xl`。预览滚动把高亮和富预览增强推迟到滚动结束后，允许最多 1 个调度边界长帧。
 
 复测的启动命令、浏览器设置和各场景说明见[浏览器滚动与压测](./development#浏览器滚动与压测)。

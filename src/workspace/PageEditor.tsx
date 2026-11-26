@@ -36,6 +36,7 @@ interface PageEditorProps {
   readonly onImport: (file: File) => void
   readonly onDetachedImages?: (pageId: string, images: readonly ImageAttributes[], pos: number) => Promise<void>
   readonly onNotice?: (notice: string) => void
+  readonly restoreScrollY?: number | null
 }
 
 function commentId() {
@@ -46,7 +47,8 @@ function hasFilePayload(data: DataTransfer) {
   return data.types.includes('Files') || [...data.items].some(item => item.kind === 'file')
 }
 
-export function PageEditor({ page, extensions, anchor, commentsOpen, onCommentsOpen, onEditorReady, onEdit, onStageContent, onHoldImageAssets, onImport, onDetachedImages, onNotice }: PageEditorProps) {
+export function PageEditor({ page, extensions, anchor, commentsOpen, onCommentsOpen, onEditorReady, onEdit, onStageContent,
+  onHoldImageAssets, onImport, onDetachedImages, onNotice, restoreScrollY = null }: PageEditorProps) {
   const surface = useRef<HTMLElement>(null)
   const initialContent = useRef(page.content)
   const normalizedOnMount = useRef(false)
@@ -95,7 +97,7 @@ export function PageEditor({ page, extensions, anchor, commentsOpen, onCommentsO
     },
   })
 
-  useLayoutEffect(() => { window.scrollTo(0, 0) }, [])
+  useLayoutEffect(() => { window.scrollTo(0, restoreScrollY ?? 0) }, [])
   useLayoutEffect(() => {
     if (editor) onEditorReady(page.id, editor)
   }, [editor, onEditorReady, page.id])

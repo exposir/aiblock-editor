@@ -34,6 +34,8 @@ interface NavigationProps {
   readonly view: NavigationView
   readonly open: boolean
   readonly editor: Editor | null
+  readonly readOnly?: boolean
+  readonly content?: JSONContent
   readonly onView: (view: NavigationView) => void
   readonly onClose: () => void
   readonly onActivate: (id: string) => void
@@ -124,7 +126,7 @@ function matchingPages(workspace: WorkspaceState<PageMetadata>, query: string): 
 }
 
 export function WorkspaceNavigation({ workspace, view, open, editor, onView, onClose, onActivate, onCreate, onIcon, onAction,
-  searchContent, onRestore, onPurge, onEmptyTrash }: NavigationProps) {
+  readOnly = false, content, searchContent, onRestore, onPurge, onEmptyTrash }: NavigationProps) {
   const [query, setQuery] = useState('')
   const [collapsed, setCollapsed] = useState<ReadonlySet<string>>(() => new Set())
   const [popover, setPopover] = useState<OpenPopover | null>(null)
@@ -212,17 +214,18 @@ export function WorkspaceNavigation({ workspace, view, open, editor, onView, onC
             aria-label={`${expanded ? '折叠' : '展开'}「${title}」的子页`}
             onClick={() => toggleBranch(page.id)}><ChevronRight size={14} aria-hidden="true" /></button>
             : <span className="page-disclosure" aria-hidden="true" />}
-          <button type="button" className="icon-control page-emoji" aria-label={`更换「${title}」的图标`} title="更换图标"
-            aria-expanded={iconOpen} aria-controls={iconOpen ? popoverId : undefined}
-            onClick={event => togglePopover(event.currentTarget, page.id, 'icons')}>{page.icon}</button>
+          {readOnly ? <span className="page-emoji" aria-hidden="true">{page.icon}</span>
+            : <button type="button" className="icon-control page-emoji" aria-label={`更换「${title}」的图标`} title="更换图标"
+              aria-expanded={iconOpen} aria-controls={iconOpen ? popoverId : undefined}
+              onClick={event => togglePopover(event.currentTarget, page.id, 'icons')}>{page.icon}</button>}
           <button type="button" className="page-tree-title" aria-current={active ? 'page' : undefined} title={title}
             onClick={() => onActivate(page.id)}>{title}</button>
           <div className="page-row-actions">
             <button type="button" className="icon-control" aria-label={`新建「${title}」的子页`} title="新建子页"
               onClick={() => add(page.id)}><Plus size={15} aria-hidden="true" /></button>
-            <button type="button" className="icon-control" aria-label={`「${title}」的更多操作`} title="更多操作"
+            {!readOnly && <button type="button" className="icon-control" aria-label={`「${title}」的更多操作`} title="更多操作"
               aria-expanded={actionsOpen} aria-controls={actionsOpen ? popoverId : undefined}
-              onClick={event => togglePopover(event.currentTarget, page.id, 'actions')}><Ellipsis size={16} aria-hidden="true" /></button>
+              onClick={event => togglePopover(event.currentTarget, page.id, 'actions')}><Ellipsis size={16} aria-hidden="true" /></button>}
           </div>
         </div>
         {hasChildren && expanded && <ul>{rows(page.id, depth + 1)}</ul>}
@@ -276,18 +279,18 @@ export function WorkspaceNavigation({ workspace, view, open, editor, onView, onC
           <ul aria-label="已删除页面">
             {trash.map(page => <li key={page.id}>
               <span title={pageTitle(page)}>{page.icon} {pageTitle(page)}</span>
-              <button type="button" aria-label={`恢复「${pageTitle(page)}」`} onClick={() => onRestore?.(page.id)}>恢复</button>
-              <button type="button" aria-label={`彻底删除「${pageTitle(page)}」`} onClick={() => onPurge?.(page.id)}>彻底删除</button>
+              {!readOnly && <button type="button" aria-label={`恢复「${pageTitle(page)}」`} onClick={() => onRestore?.(page.id)}>恢复</button>}
+              {!readOnly && <button type="button" aria-label={`彻底删除「${pageTitle(page)}」`} onClick={() => onPurge?.(page.id)}>彻底删除</button>}
             </li>)}
           </ul>
-          <button type="button" className="workspace-trash-empty" onClick={onEmptyTrash}>清空回收站</button>
+          {!readOnly && <button type="button" className="workspace-trash-empty" onClick={onEmptyTrash}>清空回收站</button>}
         </details> : <p className="workspace-trash-muted">回收站为空</p>}
         <div className="page-count">{workspace.pages.length} 个页面</div>
-        {popover && popoverPage && <PagePopover key={`${popover.kind}-${popover.pageId}`} popover={popover} page={popoverPage}
+        {!readOnly && popover && popoverPage && <PagePopover key={`${popover.kind}-${popover.pageId}`} popover={popover} page={popoverPage}
           id={popoverId} onClose={() => setPopover(null)} onIcon={onIcon} onAction={onAction} />}
       </> : <>
         <div className="sidebar-heading navigation-outline-heading"><List size={16} aria-hidden="true" /><h2>目录</h2></div>
-        <OutlineSidebar key={workspace.activePageId} editor={editor} />
+        <OutlineSidebar key={workspace.activePageId} editor={editor} content={content} />
       </>}
     </aside>
   )

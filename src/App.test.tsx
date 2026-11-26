@@ -1,11 +1,12 @@
 import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import type { Editor } from '@tiptap/core'
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, onTestFinished, vi } from 'vitest'
 import App from './App'
 import type { DesktopBridge } from './desktop/bridge'
 import { DEMO_HANDBOOK_ID, createDemoWorkspace } from './workspace/demo-workspace'
 import { WORKSPACE_STORAGE_KEY } from './workspace/page-store'
+import { DOCUMENT_MODE_STORAGE_KEY } from './workspace/document-mode'
 import { splitLegacyWorkspace } from './workspace/workspace-format'
 import type { PageShard, WorkspaceExternalChange } from './workspace/workspace-format'
 import { createEditorExtensions } from './editor/extensions'
@@ -48,12 +49,117 @@ describe('App 多页面集成', () => {
     return user
   }
 
+  async function mountPreview() {
+    localStorage.setItem(DOCUMENT_MODE_STORAGE_KEY, 'preview')
+    const user = userEvent.setup()
+    render(<App />)
+    await screen.findByRole('article', { name: '文档预览' })
+    return user
+  }
+
   async function deleteFromTree(user: ReturnType<typeof userEvent.setup>, title: string) {
     await user.click(screen.getByRole('button', { name: `「${title}」的更多操作` }))
     await user.click(within(screen.getByRole('group', { name: `${title}的操作` })).getByRole('button', { name: '删除页面' }))
     const dialog = screen.getByRole('dialog', { name: '删除页面' })
     await user.click(within(dialog).getByRole('button', { name: '移入回收站' }))
   }
+
+  it('mode: 顶栏预览/编辑开关切换为纯静态文档并持久化', async () => {
+    const user = await mountApp()
+    const group = screen.getByRole('radiogroup', { name: '文档模式' })
+    expect(within(group).getByRole('radio', { name: '编辑' })).toHaveAttribute('aria-checked', 'true')
+    await user.click(within(group).getByRole('radio', { name: '预览' }))
+    expect(screen.getByRole('article', { name: '文档预览' })).toBeInTheDocument()
+    expect(screen.queryByRole('textbox')).not.toBeInTheDocument()
+    expect(document.querySelector('.ProseMirror')).toBeNull()
+    expect(document.querySelector('[contenteditable]')).toBeNull()
+    expect(document.querySelector('[data-document-overlays]')).toBeNull()
+    expect(document.querySelector('.bubble-toolbar')).toBeNull()
+    expect(document.querySelector('.table-controls-layer')).toBeNull()
+    expect(group.style.getPropertyValue('--mode-index')).toBe('0')
+    expect(localStorage.getItem(DOCUMENT_MODE_STORAGE_KEY)).toBe('preview')
+    expect(screen.queryByRole('button', { name: '重置示例工作区' })).not.toBeInTheDocument()
+
+    await user.click(within(group).getByRole('radio', { name: '编辑' }))
+    expect(await screen.findByRole('textbox', { name: '文档正文' })).toBeInTheDocument()
+    expect(group.style.getPropertyValue('--mode-index')).toBe('1')
+  })
+
+  it('mode: 预览偏好跨重新挂载保留', async () => {
+    localStorage.setItem(DOCUMENT_MODE_STORAGE_KEY, 'preview')
+    const first = render(<App />)
+    expect(await screen.findByRole('article', { name: '文档预览' })).toBeInTheDocument()
+    first.unmount()
+    render(<App />)
+    expect(await screen.findByRole('article', { name: '文档预览' })).toBeInTheDocument()
+    expect(screen.queryByRole('textbox')).not.toBeInTheDocument()
+  })
+
+  it('mode: 编辑改字切预览不丢内容，Web 快捷键同页切换保留滚动位置', async () => {
+    const user = await mountApp()
+    const editor = (screen.getByRole('textbox', { name: '文档正文' }) as HTMLElement & { editor: Editor }).editor
+    act(() => editor.commands.setContent('<p>切换前的最后一版正文</p>'))
+    const scrollY = vi.spyOn(window, 'scrollY', 'get').mockReturnValue(420)
+    const scrollTo = vi.mocked(window.scrollTo)
+    scrollTo.mockClear()
+
+    fireEvent.keyDown(window, { key: 'e', ctrlKey: true })
+    const preview = await screen.findByRole('article', { name: '文档预览' })
+    expect(preview).toHaveTextContent('切换前的最后一版正文')
+    expect(scrollTo).toHaveBeenCalledWith(0, 420)
+    expect(localStorage.getItem(DOCUMENT_MODE_STORAGE_KEY)).toBe('preview')
+
+    fireEvent.keyDown(window, { key: 'e', metaKey: true })
+    expect(await screen.findByRole('textbox', { name: '文档正文' })).toHaveTextContent('切换前的最后一版正文')
+    expect(scrollTo).toHaveBeenCalledWith(0, 420)
+    scrollY.mockRestore()
+  })
+
+  it('mode: 预览下新建页面自动切到编辑并聚焦标题', async () => {
+    const user = await mountPreview()
+    expect(screen.queryByRole('textbox')).not.toBeInTheDocument()
+    await user.click(screen.getByRole('button', { name: '新建顶层页面' }))
+    const title = await screen.findByRole('textbox', { name: '文档标题' })
+    expect(title).toHaveValue('无标题文档')
+    await waitFor(() => expect(title).toHaveFocus())
+    expect(screen.getByRole('radio', { name: '编辑' })).toHaveAttribute('aria-checked', 'true')
+    expect(screen.getByRole('textbox', { name: '文档正文' })).toBeInTheDocument()
+  })
+
+  it('mode: 预览下导入 Markdown 自动切到编辑', async () => {
+    await mountPreview()
+    const file = new File(['# 导入页面\n\n导入后的正文。\n'], '导入页面.md', { type: 'text/markdown' })
+    fireEvent.change(document.querySelector<HTMLInputElement>('input[type="file"]')!, { target: { files: [file] } })
+    expect(await screen.findByRole('textbox', { name: '文档正文' })).toHaveTextContent('导入后的正文')
+    expect(screen.getByRole('textbox', { name: '文档标题' })).toHaveValue('导入页面')
+    expect(screen.getByRole('radio', { name: '编辑' })).toHaveAttribute('aria-checked', 'true')
+  })
+
+  it('mode: 预览目录由 JSON 提取，评论只读且可定位正文锚点', async () => {
+    const originalScroll = Object.getOwnPropertyDescriptor(HTMLElement.prototype, 'scrollIntoView')
+    const scrollIntoView = vi.fn()
+    Object.defineProperty(HTMLElement.prototype, 'scrollIntoView', { configurable: true, value: scrollIntoView })
+    onTestFinished(() => {
+      if (originalScroll) Object.defineProperty(HTMLElement.prototype, 'scrollIntoView', originalScroll)
+      else Reflect.deleteProperty(HTMLElement.prototype, 'scrollIntoView')
+    })
+    const user = await mountPreview()
+    expect(screen.queryByRole('button', { name: /更换「/ })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /更多操作/ })).not.toBeInTheDocument()
+    await user.click(screen.getByRole('button', { name: '目录' }))
+    const outline = await screen.findByRole('navigation', { name: '文档章节' })
+    expect(within(outline).getByRole('button', { name: '发布安排' })).toBeInTheDocument()
+    await user.click(within(outline).getByRole('button', { name: '发布安排' }))
+    expect(scrollIntoView).toHaveBeenCalled()
+
+    const comments = screen.getByRole('complementary', { name: '评论' })
+    expect(within(comments).queryByRole('textbox')).not.toBeInTheDocument()
+    expect(within(comments).queryByRole('button', { name: '解决评论' })).not.toBeInTheDocument()
+    expect(within(comments).queryByRole('button', { name: '删除评论' })).not.toBeInTheDocument()
+    await user.click(within(comments).getByRole('button', { name: '先向试点团队开放模板库' }))
+    await waitFor(() => expect(document.querySelector('[data-comment-id="demo-pilot-scope"]')).toHaveClass('comment-active'))
+    await waitFor(() => expect(scrollIntoView.mock.calls.length).toBeGreaterThanOrEqual(2))
+  })
 
   it('trash: 从侧栏软删、恢复页面树，再确认永久删除和清空', async () => {
     const user = await mountApp()
@@ -294,6 +400,8 @@ describe('App 多页面集成', () => {
     await user.click(screen.getByRole('button', { name: '快捷键' }))
     const shortcuts = screen.getByRole('dialog', { name: '快捷键' })
     expect(shortcuts).toBeInTheDocument()
+    const modeShortcut = within(shortcuts).getByText('切换预览 / 编辑').closest('div')!
+    expect(within(modeShortcut).getByText('E')).toBeInTheDocument()
     const themeShortcut = within(shortcuts).getByText('切换深浅色').closest('div')!
     expect(within(themeShortcut).getByText('Cmd / Ctrl')).toBeInTheDocument()
     expect(within(themeShortcut).getByText('D')).toBeInTheDocument()

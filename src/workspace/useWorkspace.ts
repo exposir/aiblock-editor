@@ -166,11 +166,16 @@ export function useWorkspace(schema: Schema, persistence?: WorkspacePersistence)
     return next
   }, [track])
 
-  const flush = useCallback(() => {
+  const commitDraft = useCallback(() => {
     clearTimeout(timer.current)
     const previous = current.current
     const next = collect()
     if (next && next !== previous) publish(next)
+    return next
+  }, [collect, publish])
+
+  const flush = useCallback(() => {
+    const next = commitDraft()
     writeAgain.current = true
     if (inFlight.current) return inFlight.current
 
@@ -228,7 +233,7 @@ export function useWorkspace(schema: Schema, persistence?: WorkspacePersistence)
       await storage.pruneOrphanAssets(undefined, [...protectedIds])
     }).catch(error => console.warn('Unable to prune unused images', error))
     return writing
-  }, [collect, persistence, publish, storage])
+  }, [commitDraft, persistence, storage])
 
   const cachedContent = useCallback((id: string) => {
     const pending = dirty.current.get(id)
@@ -571,7 +576,7 @@ export function useWorkspace(schema: Schema, persistence?: WorkspacePersistence)
 
   return {
     workspace: snapshot?.workspace ?? null, anchor: snapshot?.anchor ?? null, revision: revision ?? 0,
-    saveFailed, loadFailed, retry, change, reset, stageContent, loadPage, deferTitle,
+    saveFailed, loadFailed, retry, change, reset, stageContent, commitDraft, flush, loadPage, deferTitle,
     externalConflict, keepLocal, reloadExternal, searchContent, purgeTrash, holdEditorAssets,
   }
 }

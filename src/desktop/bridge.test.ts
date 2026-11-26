@@ -5,6 +5,7 @@ import { createElement } from 'react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import App from '../App'
 import { WORKSPACE_STORAGE_KEY } from '../workspace/page-store'
+import { DOCUMENT_MODE_STORAGE_KEY } from '../workspace/document-mode'
 import type { WorkspaceState } from '../workspace/page-store'
 import { createAssetStore } from '../workspace/asset-store'
 import { splitLegacyWorkspace } from '../workspace/workspace-format'
@@ -382,6 +383,56 @@ describe('desktop workspace in App', () => {
     expect(document.documentElement).toHaveAttribute('data-theme', 'light')
     expect(native.bridge.setTheme).toHaveBeenLastCalledWith('light')
     view.unmount()
+  })
+
+  it('routes native mode toggles without double-firing the web shortcut', async () => {
+    const native = nativeProfile()
+    vi.stubGlobal('desktop', native.bridge)
+    const view = renderApp()
+    await screen.findByRole('textbox', { name: '文档标题' })
+    fireEvent.keyDown(window, { key: 'e', metaKey: true })
+    expect(screen.queryByRole('article', { name: '文档预览' })).not.toBeInTheDocument()
+    expect(screen.getByRole('radio', { name: '编辑' })).toHaveAttribute('aria-checked', 'true')
+    expect(menuCommands).toContain('toggle-mode')
+
+    native.command('toggle-mode')
+    expect(await screen.findByRole('article', { name: '文档预览' })).toBeInTheDocument()
+    expect(screen.getByRole('radio', { name: '预览' })).toHaveAttribute('aria-checked', 'true')
+    expect(localStorage.getItem(DOCUMENT_MODE_STORAGE_KEY)).toBe('preview')
+
+    native.command('toggle-mode')
+    expect(await screen.findByRole('textbox', { name: '文档正文' })).toBeInTheDocument()
+    expect(screen.getByRole('radio', { name: '编辑' })).toHaveAttribute('aria-checked', 'true')
+    view.unmount()
+  })
+
+  it('hot-reloads external content in preview without creating a conflict draft', async () => {
+    const id = '6a7fc615-75ff-4d51-8a10-e83183e5a65b'
+    const record: WorkspaceState = {
+      activePageId: id,
+      pages: [{
+        id, parentId: null, icon: '📄', title: '磁盘文档',
+        content: { type: 'doc', content: [{ type: 'paragraph', attrs: { blockId: 'old' }, content: [{ type: 'text', text: '旧正文' }] }] },
+        comments: [], createdAt: 0, updatedAt: 0, order: 0,
+      }],
+    }
+    const native = nativeProfile(JSON.stringify(record))
+    localStorage.setItem(DOCUMENT_MODE_STORAGE_KEY, 'preview')
+    vi.stubGlobal('desktop', native.bridge)
+    renderApp()
+    expect(await screen.findByRole('article', { name: '文档预览' })).toHaveTextContent('旧正文')
+    const { content: _content, ...pageMeta } = record.pages[0]!
+    const externalIndex: WorkspaceIndex = {
+      ...splitLegacyWorkspace(JSON.stringify(record))!.index,
+      pages: [{ ...pageMeta, title: '外部标题', updatedAt: 2 }],
+    }
+    const externalShard: PageShard = {
+      id, updatedAt: 2,
+      content: { type: 'doc', content: [{ type: 'paragraph', attrs: { blockId: 'new' }, content: [{ type: 'text', text: '外部新正文' }] }] },
+    }
+    native.external({ indexChanged: true, pageIds: [id] }, externalIndex, [externalShard])
+    await waitFor(() => expect(screen.getByRole('article', { name: '文档预览' })).toHaveTextContent('外部新正文'))
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument()
   })
 
   it('clears the native profile on a confirmed reset and saves the default workspace', async () => {
