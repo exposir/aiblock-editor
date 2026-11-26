@@ -9,6 +9,8 @@ export interface PaseoAgent {
   readonly model: string
   readonly lastStatus: string
   readonly requiresAttention: boolean
+  readonly createdAt: string
+  readonly lastActivityAt: string
   readonly updatedAt: string
 }
 
@@ -18,7 +20,10 @@ export interface PaseoWorkspace {
   readonly title: string
   readonly displayName: string
   readonly cwd: string
+  readonly parentWorkspaceId: string | null
   readonly pinnedAt: string | null
+  readonly createdAt: string
+  readonly lastActivityAt: string
   readonly updatedAt: string
   readonly agents: readonly PaseoAgent[]
 }

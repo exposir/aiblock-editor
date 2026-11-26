@@ -17,6 +17,8 @@ const agent: PaseoAgent = {
   model: 'gpt-5',
   lastStatus: 'running',
   requiresAttention: false,
+  createdAt: '2026-11-26T09:00:00.000Z',
+  lastActivityAt: '2026-11-26T10:00:00.000Z',
   updatedAt: '2026-11-26T10:00:00.000Z',
 }
 
@@ -237,5 +239,62 @@ describe('Paseo Markdown conversion', () => {
       .toBe(true)
     const math = document.content.content?.find(node => node.type === 'codeBlock' && node.attrs?.language === 'math')
     expect(math?.content?.[0]?.text).toContain('E = mc^2')
+  })
+
+  it('reverses complete turns for newest-first order without splitting a turn', () => {
+    const items: PaseoLogItem[] = [
+      { type: 'user_message', text: '问题一' },
+      { type: 'reasoning', text: '思考一' },
+      { type: 'assistant_message', text: '回答一' },
+      { type: 'user_message', text: '问题二' },
+      {
+        type: 'tool_call',
+        name: 'shell',
+        detail: { type: 'shell', command: 'echo two' },
+      },
+      { type: 'assistant_message', text: '回答二' },
+      { type: 'user_message', text: '问题三' },
+      { type: 'reasoning', text: '思考三' },
+      { type: 'assistant_message', text: '回答三' },
+    ]
+    const markdown = paseoLogsToMarkdown('倒序窗口', agent, items, { includeDetails: true, order: 'desc' })
+    const index = (text: string) => markdown.indexOf(text)
+    expect(index('## 3. 问题三')).toBeGreaterThanOrEqual(0)
+    expect(index('## 3. 问题三')).toBeLessThan(index('思考三'))
+    expect(index('思考三')).toBeLessThan(index('回答三'))
+    expect(index('回答三')).toBeLessThan(index('## 2. 问题二'))
+    expect(index('## 2. 问题二')).toBeLessThan(index('echo two'))
+    expect(index('echo two')).toBeLessThan(index('回答二'))
+    expect(index('回答二')).toBeLessThan(index('## 1. 问题一'))
+    expect(index('## 1. 问题一')).toBeLessThan(index('思考一'))
+    expect(index('思考一')).toBeLessThan(index('回答一'))
+
+    const document = paseoLogsToDocument(schema, '倒序窗口', agent, items, { order: 'desc' })
+    expect(extractPreviewOutline(document.content).map(entry => entry.text))
+      .toEqual(['倒序窗口', '3. 问题三', '2. 问题二', '1. 问题一'])
+  })
+
+  it('normalizes command tags without touching ordinary angle-bracket text', () => {
+    const tagged: PaseoLogItem[] = [{
+      type: 'user_message',
+      text: '<command-message>daily-deploy</command-message>\n<command-name>/daily-deploy</command-name>\n\n检查发布结果',
+    }]
+    const markdown = paseoLogsToMarkdown('命令窗口', agent, tagged)
+    expect(markdown).toContain('## 1. /daily-deploy')
+    expect(markdown).toContain('> /daily-deploy')
+    expect(markdown).toContain('> 检查发布结果')
+    expect(markdown).not.toContain('<command-message>')
+    expect(markdown).not.toContain('<command-name>')
+
+    const messageOnly = paseoLogsToMarkdown('命令窗口', agent, [{
+      type: 'user_message',
+      text: '<command-message>daily-deploy</command-message>',
+    }])
+    expect(messageOnly).toContain('## 1. /daily-deploy')
+    expect(messageOnly).not.toContain('//daily-deploy')
+
+    const technical = '<child>value</child> 与 1 < 2 是普通技术文本'
+    expect(paseoLogsToMarkdown('技术窗口', agent, [{ type: 'user_message', text: technical }]))
+      .toContain(technical)
   })
 })

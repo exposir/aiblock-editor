@@ -1,10 +1,10 @@
-import { act, render, screen, waitFor } from '@testing-library/react'
+import { act, render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { getSchema } from '@tiptap/core'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { createEditorExtensions } from '../editor/extensions'
 import type { DesktopBridge } from '../desktop/bridge'
-import { PaseoWorkspace, PASEO_SELECTION_STORAGE_KEY } from './PaseoWorkspace'
+import { PaseoWorkspace, PASEO_MESSAGE_ORDER_STORAGE_KEY, PASEO_SELECTION_STORAGE_KEY } from './PaseoWorkspace'
 import type { PaseoAgent, PaseoAgentLogs, PaseoTreeSnapshot, PaseoWorkspace as PaseoWorkspaceRecord } from './paseo-types'
 
 const schema = getSchema(createEditorExtensions())
@@ -20,6 +20,8 @@ function agent(id: string, title: string, updatedAt = '2026-11-26T10:00:00.000Z'
     model: 'gpt-5',
     lastStatus: 'idle',
     requiresAttention: false,
+    createdAt: '2026-11-26T09:00:00.000Z',
+    lastActivityAt: updatedAt,
     updatedAt,
   }
 }
@@ -31,7 +33,10 @@ function workspaceRecord(agents: PaseoAgent[], updatedAt = '2026-11-26T10:00:00.
     title: '发布窗口',
     displayName: 'main',
     cwd: '/tmp/project',
+    parentWorkspaceId: null,
     pinnedAt: null,
+    createdAt: '2026-11-26T09:00:00.000Z',
+    lastActivityAt: updatedAt,
     updatedAt,
     agents,
   }
@@ -179,7 +184,7 @@ describe('PaseoWorkspace', () => {
     await previewHas('Original content')
     failing = true
     act(() => changeListener?.())
-    expect(await screen.findByText('无法刷新这个 Paseo 窗口，当前仍显示上一次的内容。', {}, { timeout: 2000 }))
+    expect(await screen.findByText(/无法刷新这个 Paseo 窗口，当前仍显示上一次的内容：refresh failed/, {}, { timeout: 2000 }))
       .toBeInTheDocument()
     expect(screen.getByRole('article', { name: '文档预览' })).toHaveTextContent('Original content')
   })
@@ -220,7 +225,7 @@ describe('PaseoWorkspace', () => {
     )
     const user = userEvent.setup()
     renderWorkspace(bridge.bridge)
-    expect(await screen.findByText('无法读取这个 Paseo 窗口的日志。请稍后刷新重试。')).toBeInTheDocument()
+    expect(await screen.findByText(/无法读取这个 Paseo 窗口的日志：logs down/)).toBeInTheDocument()
     await user.click(screen.getByRole('button', { name: '刷新 Paseo 窗口' }))
     await previewHas('Recovered content')
     expect(bridge.readPaseoLogs).toHaveBeenLastCalledWith('agent-a', { force: true })
@@ -257,5 +262,65 @@ describe('PaseoWorkspace', () => {
     await previewHas('Fallback A content')
     await waitFor(() => expect(screen.getByRole('button', { name: /Agent A/ })).toHaveAttribute('aria-current', 'page'))
     expect(localStorage.getItem(PASEO_SELECTION_STORAGE_KEY)).toBe('agent-a')
+  })
+
+  it('switches message order to newest-first and reorders the outline immediately', async () => {
+    const items: PaseoAgentLogs = {
+      agentId: 'agent-a',
+      items: [
+        { type: 'user_message', text: '旧的问题' },
+        { type: 'assistant_message', text: '旧的回答' },
+        { type: 'user_message', text: '新的问题' },
+        { type: 'assistant_message', text: '新的回答' },
+      ],
+    }
+    const bridge = bridgeWith(async () => tree([agent('agent-a', 'Agent A')]), async () => items)
+    const user = userEvent.setup()
+    const first = renderWorkspace(bridge.bridge)
+    await previewHas('旧的回答')
+    const previewOrder = () => {
+      const text = screen.getByRole('article', { name: '文档预览' }).textContent ?? ''
+      return [text.indexOf('旧的回答'), text.indexOf('新的回答')] as const
+    }
+    const [oldIndex, newIndex] = previewOrder()
+    expect(oldIndex).toBeLessThan(newIndex)
+    const toggle = screen.getByRole('button', { name: '切换消息顺序' })
+    expect(toggle).toHaveTextContent('正序')
+    await user.click(toggle)
+    await waitFor(() => {
+      const [latest, oldest] = previewOrder()
+      expect(latest).toBeGreaterThan(oldest)
+    })
+    expect(toggle).toHaveTextContent('最新在前')
+    expect(localStorage.getItem(PASEO_MESSAGE_ORDER_STORAGE_KEY)).toBe('desc')
+    expect(window.scrollTo).toHaveBeenLastCalledWith(0, 0)
+
+    await user.click(screen.getByRole('button', { name: '目录侧栏' }))
+    const outline = await screen.findByRole('navigation', { name: '文档章节' })
+    expect(within(outline).getAllByRole('button').map(button => button.textContent).filter(text => /^\d\./.test(text ?? '')))
+      .toEqual(['2. 新的问题', '1. 旧的问题'])
+    first.unmount()
+    renderWorkspace(bridge.bridge)
+    await previewHas('新的回答')
+    expect(screen.getByRole('button', { name: '切换消息顺序' })).toHaveTextContent('最新在前')
+    const [oldest, latest] = previewOrder()
+    expect(latest).toBeLessThan(oldest)
+  })
+
+  it('surfaces a concise provider error instead of the Electron IPC wrapper', async () => {
+    const bridge = bridgeWith(
+      async () => tree([agent('agent-dsh', 'DSH Agent')]),
+      async () => {
+        throw new Error(
+          "Error invoking remote method 'paseo:logs': Unable to read Paseo logs: " +
+          "Command failed: paseo logs agent-dsh --json\n" +
+          "Agent agent-dsh references unavailable provider 'dsh'",
+        )
+      },
+    )
+    renderWorkspace(bridge.bridge)
+    expect(await screen.findByText(/Provider 'dsh' 不可用/)).toBeInTheDocument()
+    expect(screen.queryByText(/Error invoking remote method/)).not.toBeInTheDocument()
+    expect(screen.queryByText(/Unable to read Paseo logs/)).not.toBeInTheDocument()
   })
 })

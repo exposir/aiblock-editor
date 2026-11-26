@@ -83,44 +83,70 @@ async function fixture() {
   await writeJson(join(home, 'projects', 'workspaces.json'), [
     {
       workspaceId: 'wks_a1', projectId: 'prj_a', cwd: '/work/a', displayName: 'main', title: 'Pinned',
-      pinnedAt: '2026-11-26T09:00:00.000Z', updatedAt: '2026-11-26T08:00:00.000Z', archivedAt: null, background: false,
+      parentWorkspaceId: null, pinnedAt: '2026-11-26T09:00:00.000Z',
+      createdAt: '2026-11-26T07:00:00.000Z', updatedAt: '2026-11-26T08:00:00.000Z',
+      archivedAt: null, background: false,
     },
     {
       workspaceId: 'wks_a2', projectId: 'prj_a', cwd: '/work/a/feature', displayName: 'feature', title: 'Feature',
-      pinnedAt: null, updatedAt: '2026-11-26T10:00:00.000Z', archivedAt: null, background: false,
+      parentWorkspaceId: null, pinnedAt: null, createdAt: '2026-11-26T09:30:00.000Z',
+      updatedAt: '2026-11-26T10:00:00.000Z', archivedAt: null, background: false,
+    },
+    {
+      workspaceId: 'wks_live', projectId: 'prj_a', cwd: '/work/a', displayName: 'main', title: 'AFFINE',
+      parentWorkspaceId: null, pinnedAt: null, createdAt: '2026-11-26T06:00:00.000Z',
+      updatedAt: '2026-11-26T07:00:00.000Z', archivedAt: null, background: false,
+    },
+    {
+      workspaceId: 'wks_child', projectId: 'prj_a', cwd: '/work/a/child', displayName: 'cm-work', title: 'Child',
+      parentWorkspaceId: 'wks_a1', pinnedAt: null, createdAt: '2026-11-26T06:30:00.000Z',
+      updatedAt: '2026-11-26T06:30:00.000Z', archivedAt: null, background: false,
     },
     {
       workspaceId: 'wks_bg', projectId: 'prj_a', cwd: '/work/a', displayName: 'background', title: 'Background',
-      pinnedAt: null, updatedAt: '2026-11-26T11:00:00.000Z', archivedAt: null, background: true,
+      parentWorkspaceId: null, pinnedAt: null, createdAt: '2026-11-26T10:30:00.000Z',
+      updatedAt: '2026-11-26T11:00:00.000Z', archivedAt: null, background: true,
     },
     {
       workspaceId: 'wks_old', projectId: 'prj_a', cwd: '/work/a', displayName: 'archived', title: 'Archived',
-      pinnedAt: null, updatedAt: '2026-11-26T12:00:00.000Z', archivedAt: '2026-11-26T12:00:00.000Z', background: false,
+      parentWorkspaceId: null, pinnedAt: null, createdAt: '2026-11-26T11:30:00.000Z',
+      updatedAt: '2026-11-26T12:00:00.000Z', archivedAt: '2026-11-26T12:00:00.000Z', background: false,
     },
   ])
   const agents = [
     {
       id: 'agent-a1', title: 'Older task', workspaceId: 'wks_a1', cwd: '/work/a', provider: 'codex',
       config: { model: 'gpt-5' }, lastStatus: 'idle', requiresAttention: false,
+      createdAt: '2026-11-26T07:00:00.000Z',
       updatedAt: '2026-11-26T08:00:00.000Z', archivedAt: null, internal: false,
     },
     {
       id: 'agent-a2', title: 'Newer task', workspaceId: 'wks_a1', cwd: '/work/a', provider: 'claude',
       model: 'sonnet', lastStatus: 'running', requiresAttention: true,
+      createdAt: '2026-11-26T09:00:00.000Z', lastActivityAt: '2026-11-26T11:00:00.000Z',
       updatedAt: '2026-11-26T10:00:00.000Z', archivedAt: null, internal: false,
+    },
+    {
+      id: 'agent-live', title: 'AFFINE task', workspaceId: 'wks_live', cwd: '/work/a', provider: 'qoder',
+      config: { model: 'qwen' }, lastStatus: 'running', requiresAttention: false,
+      createdAt: '2026-11-26T06:00:00.000Z', lastActivityAt: '2026-11-26T12:00:00.000Z',
+      updatedAt: '2026-11-26T07:00:00.000Z', archivedAt: null, internal: false,
     },
     {
       id: 'agent-orphan', title: 'Orphan task', workspaceId: 'wks_missing', cwd: '/tmp', provider: 'qoder',
       config: { model: 'qwen' }, lastStatus: 'closed', requiresAttention: false,
+      createdAt: '2026-11-26T08:00:00.000Z', lastActivityAt: '2026-11-26T09:00:00.000Z',
       updatedAt: '2026-11-26T09:00:00.000Z', archivedAt: null, internal: false,
     },
     {
       id: 'agent-internal', title: 'Internal', workspaceId: 'wks_a1', cwd: '/work/a', provider: 'internal',
       lastStatus: 'running', requiresAttention: false, updatedAt: '2026-11-26T12:00:00.000Z', internal: true,
+      createdAt: '2026-11-26T11:00:00.000Z', lastActivityAt: '2026-11-26T12:00:00.000Z',
     },
     {
       id: 'agent-archived', title: 'Archived', workspaceId: 'wks_a1', cwd: '/work/a', provider: 'codex',
       lastStatus: 'closed', requiresAttention: false, updatedAt: '2026-11-26T13:00:00.000Z',
+      createdAt: '2026-11-26T12:30:00.000Z', lastActivityAt: '2026-11-26T13:00:00.000Z',
       archivedAt: '2026-11-26T13:00:00.000Z', internal: false,
     },
   ]
@@ -133,7 +159,8 @@ async function cacheFixture(count: number) {
   const home = await tempHome('aiblock-paseo-cache-test-')
   const workspace = {
     workspaceId: 'wks_cache', projectId: 'prj_cache', cwd: '/cache', displayName: 'main', title: 'Cache',
-    pinnedAt: null, updatedAt: '2026-11-26T10:00:00.000Z', archivedAt: null, background: false,
+    parentWorkspaceId: null, pinnedAt: null, createdAt: '2026-11-26T09:00:00.000Z',
+    updatedAt: '2026-11-26T10:00:00.000Z', archivedAt: null, background: false,
   }
   await writeJson(join(home, 'projects', 'projects.json'), [{
     projectId: 'prj_cache', rootPath: '/cache', displayName: 'Cache', archivedAt: null,
@@ -144,6 +171,7 @@ async function cacheFixture(count: number) {
   await Promise.all(ids.map((id, index) => writeJson(join(home, 'agents', 'cache', `${id}.json`), {
     id, title: `Agent ${index}`, workspaceId: 'wks_cache', cwd: '/cache', provider: 'codex',
     config: { model: 'gpt-5' }, lastStatus: 'idle', requiresAttention: false,
+    createdAt: '2026-11-26T09:00:00.000Z', lastActivityAt: `2026-11-26T10:${String(index).padStart(2, '0')}:00.000Z`,
     updatedAt: `2026-11-26T10:${String(index).padStart(2, '0')}:00.000Z`, archivedAt: null, internal: false,
   })))
   return { home, ids }
@@ -165,13 +193,28 @@ describe('Paseo tree adapter', () => {
     const tree = await readPaseoTree()
     expect(tree.available).toBe(true)
     expect(tree.projects.map(project => project.name)).toEqual(['Alpha'])
-    expect(tree.projects[0]?.workspaces.map(workspace => workspace.title)).toEqual(['Pinned', 'Feature'])
+    expect(tree.projects[0]?.workspaces.map(workspace => workspace.title))
+      .toEqual(['Pinned', 'AFFINE', 'Feature', 'Child'])
     const pinned = tree.projects[0]?.workspaces[0]
     expect(pinned?.agents.map(agent => agent.id)).toEqual(['agent-a2', 'agent-a1'])
     expect(pinned?.agents[0]).toMatchObject({
       provider: 'claude', model: 'sonnet', lastStatus: 'running', requiresAttention: true,
     })
-    expect(tree.workspaces.map(workspace => workspace.workspaceId)).toEqual(['wks_a1', 'wks_a2'])
+    expect(pinned?.agents.find(agent => agent.id === 'agent-a1')).toMatchObject({
+      createdAt: '2026-11-26T07:00:00.000Z',
+      lastActivityAt: '2026-11-26T08:00:00.000Z',
+    })
+    const live = tree.workspaces.find(workspace => workspace.workspaceId === 'wks_live')
+    expect(live).toMatchObject({
+      updatedAt: '2026-11-26T07:00:00.000Z',
+      lastActivityAt: '2026-11-26T12:00:00.000Z',
+    })
+    expect(tree.workspaces.find(workspace => workspace.workspaceId === 'wks_child')).toMatchObject({
+      parentWorkspaceId: 'wks_a1',
+      createdAt: '2026-11-26T06:30:00.000Z',
+    })
+    expect(tree.workspaces.map(workspace => workspace.workspaceId))
+      .toEqual(['wks_a1', 'wks_live', 'wks_a2', 'wks_child'])
     expect(tree.orphanAgents.map(agent => agent.id)).toEqual(['agent-orphan'])
     expect(tree.workspaces.flatMap(workspace => workspace.agents).map(agent => agent.id))
       .not.toContain('agent-internal')

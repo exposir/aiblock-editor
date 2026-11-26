@@ -115,7 +115,10 @@ function workspace(raw: unknown): PaseoWorkspace | null {
     title: text(raw.title),
     displayName: text(raw.displayName),
     cwd: text(raw.cwd),
+    parentWorkspaceId: typeof raw.parentWorkspaceId === 'string' ? raw.parentWorkspaceId : null,
     pinnedAt: typeof raw.pinnedAt === 'string' ? raw.pinnedAt : null,
+    createdAt: text(raw.createdAt),
+    lastActivityAt: text(raw.updatedAt),
     updatedAt: text(raw.updatedAt),
     agents: [],
   }
@@ -134,6 +137,8 @@ function agent(raw: unknown): PaseoAgent | null {
     model: text(config?.model) || text(raw.model),
     lastStatus: text(raw.lastStatus, 'idle'),
     requiresAttention: raw.requiresAttention === true,
+    createdAt: text(raw.createdAt),
+    lastActivityAt: text(raw.lastActivityAt) || text(raw.updatedAt),
     updatedAt: text(raw.updatedAt),
   }
 }
@@ -169,12 +174,16 @@ async function readAgents(home: string): Promise<PaseoAgent[]> {
   }))
   const unique = new Map<string, PaseoAgent>()
   for (const value of parsed) if (value) unique.set(value.id, value)
-  return [...unique.values()].sort((left, right) => timestamp(right.updatedAt) - timestamp(left.updatedAt))
+  return [...unique.values()].sort((left, right) =>
+    timestamp(right.lastActivityAt || right.updatedAt) - timestamp(left.lastActivityAt || left.updatedAt) ||
+    timestamp(right.createdAt) - timestamp(left.createdAt))
 }
 
 function workspaceOrder(left: PaseoWorkspace, right: PaseoWorkspace): number {
   const pinned = Number(Boolean(left.pinnedAt)) - Number(Boolean(right.pinnedAt))
-  return pinned ? -pinned : timestamp(right.updatedAt) - timestamp(left.updatedAt)
+  return pinned ? -pinned :
+    timestamp(right.lastActivityAt || right.updatedAt) - timestamp(left.lastActivityAt || left.updatedAt) ||
+    timestamp(right.createdAt) - timestamp(left.createdAt)
 }
 
 export async function readPaseoTree(home = paseoHome()): Promise<PaseoTreeSnapshot> {
@@ -193,7 +202,7 @@ export async function readPaseoTree(home = paseoHome()): Promise<PaseoTreeSnapsh
   const workspaces = rawWorkspaces.flatMap(raw => {
     const value = workspace(raw)
     return value ? [value] : []
-  }).sort(workspaceOrder)
+  })
   const activeWorkspaceIds = new Set(workspaces.map(value => value.workspaceId))
   const orphanAgents = agents.filter(value => !activeWorkspaceIds.has(value.workspaceId))
   const byWorkspace = new Map<string, PaseoAgent[]>()
@@ -203,7 +212,15 @@ export async function readPaseoTree(home = paseoHome()): Promise<PaseoTreeSnapsh
     if (siblings) siblings.push(value)
     else byWorkspace.set(value.workspaceId, [value])
   }
-  const attached = workspaces.map(value => ({ ...value, agents: byWorkspace.get(value.workspaceId) ?? [] }))
+  const attached = workspaces.map(value => {
+    const workspaceAgents = byWorkspace.get(value.workspaceId) ?? []
+    const lastActivityAt = [
+      value.updatedAt,
+      ...workspaceAgents.map(agent => agent.lastActivityAt || agent.updatedAt),
+    ].reduce((latest, candidate) =>
+      timestamp(candidate) > timestamp(latest) ? candidate : latest, '')
+    return { ...value, agents: workspaceAgents, lastActivityAt: lastActivityAt || value.updatedAt }
+  }).sort(workspaceOrder)
   const byProject = new Map<string, PaseoWorkspace[]>()
   for (const value of attached) {
     const siblings = byProject.get(value.projectId)

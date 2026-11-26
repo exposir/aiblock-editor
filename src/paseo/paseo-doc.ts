@@ -7,6 +7,7 @@ import type { PaseoAgent, PaseoLogItem } from './paseo-types'
 export interface PaseoDocumentOptions {
   readonly includeDetails?: boolean
   readonly emptyMessage?: string
+  readonly order?: 'asc' | 'desc'
 }
 
 export interface PaseoDocument {
@@ -22,6 +23,26 @@ function oneLine(value: string, limit: number): string {
 
 function quote(value: string): string {
   return value.split(/\r?\n/).map(line => line ? `> ${line}` : '>').join('\n')
+}
+
+function commandText(value: string): string {
+  const trimmed = value.trim()
+  if (!trimmed) return ''
+  return trimmed.startsWith('/') ? trimmed : `/${trimmed}`
+}
+
+function normalizeUserMessage(value: string): string {
+  const names = [...value.matchAll(/<command-name>([\s\S]*?)<\/command-name>/gi)]
+    .map(match => commandText(match[1] ?? ''))
+  const messages = [...value.matchAll(/<command-message>([\s\S]*?)<\/command-message>/gi)]
+    .map(match => commandText(match[1] ?? ''))
+  if (!names.length && !messages.length) return value
+  const commands = (names.length ? names : messages).filter(Boolean)
+  const body = value
+    .replace(/<(command-name|command-message)>[\s\S]*?<\/\1>/gi, '')
+    .replace(/^\s+|\s+$/g, '')
+    .replace(/\n{3,}/g, '\n\n')
+  return [...new Set(commands), body].filter(Boolean).join('\n\n')
 }
 
 function statusLabel(agent: PaseoAgent): string {
@@ -73,6 +94,31 @@ function detailsBlock(items: readonly PaseoLogItem[]): string {
   return `<details>\n<summary>思考与工具调用（${items.length} 项）</summary>\n\n${body}\n\n</details>`
 }
 
+interface PaseoTurn {
+  readonly number: number
+  readonly items: readonly PaseoLogItem[]
+}
+
+function conversationParts(items: readonly PaseoLogItem[]): { prefix: readonly PaseoLogItem[]; turns: PaseoTurn[] } {
+  const prefix: PaseoLogItem[] = []
+  const turns: PaseoTurn[] = []
+  let current: PaseoLogItem[] | null = null
+  let number = 0
+  for (const item of items) {
+    if (item.type === 'user_message') {
+      if (current) turns.push({ number, items: current })
+      number++
+      current = [item]
+    } else if (current) {
+      current.push(item)
+    } else {
+      prefix.push(item)
+    }
+  }
+  if (current) turns.push({ number, items: current })
+  return { prefix, turns }
+}
+
 export function paseoLogsToMarkdown(
   workspaceTitle: string,
   agent: PaseoAgent | null,
@@ -96,39 +142,47 @@ export function paseoLogsToMarkdown(
     quote(['[!NOTE]', '', ...metadata].join('\n')),
   ]
 
-  let turn = 0
   let hasVisibleContent = false
-  let pendingDetails: PaseoLogItem[] = []
-  const flushDetails = () => {
-    if (pendingDetails.length && options.includeDetails === true) {
-      parts.push(detailsBlock(pendingDetails))
-      hasVisibleContent = true
-    }
-    pendingDetails = []
-  }
-
-  for (const item of items) {
-    if (item.type === 'user_message') {
-      flushDetails()
-      turn++
-      const text = item.text ?? ''
-      const summary = oneLine(text, 48) || '用户消息'
-      parts.push(`## ${turn}. ${summary}`)
-      parts.push(quote(`[!INFO]\n\n${text || '(空消息)'}`))
-      hasVisibleContent = true
-      continue
-    }
-    if (item.type === 'assistant_message') {
-      flushDetails()
-      if (item.text?.trim()) {
-        parts.push(item.text)
+  const append = (groupItems: readonly PaseoLogItem[], turn?: number) => {
+    let pendingDetails: PaseoLogItem[] = []
+    const flushDetails = () => {
+      if (pendingDetails.length && options.includeDetails === true) {
+        parts.push(detailsBlock(pendingDetails))
         hasVisibleContent = true
       }
-      continue
+      pendingDetails = []
     }
-    if (item.type === 'reasoning' || item.type === 'tool_call') pendingDetails.push(item)
+    for (const item of groupItems) {
+      if (item.type === 'user_message') {
+        flushDetails()
+        const text = normalizeUserMessage(item.text ?? '')
+        const summary = oneLine(text, 48) || '用户消息'
+        parts.push(`## ${turn ?? 1}. ${summary}`)
+        parts.push(quote(`[!INFO]\n\n${text || '(空消息)'}`))
+        hasVisibleContent = true
+        continue
+      }
+      if (item.type === 'assistant_message') {
+        flushDetails()
+        if (item.text?.trim()) {
+          parts.push(item.text)
+          hasVisibleContent = true
+        }
+        continue
+      }
+      if (item.type === 'reasoning' || item.type === 'tool_call') pendingDetails.push(item)
+    }
+    flushDetails()
   }
-  flushDetails()
+
+  const { prefix, turns } = conversationParts(items)
+  if (options.order === 'desc') {
+    for (const turn of [...turns].reverse()) append(turn.items, turn.number)
+    if (prefix.length) append(prefix)
+  } else {
+    if (prefix.length) append(prefix)
+    for (const turn of turns) append(turn.items, turn.number)
+  }
 
   if (!hasVisibleContent) {
     parts.push('## 暂无消息', options.emptyMessage ||

@@ -1,5 +1,5 @@
 import type { Schema } from '@tiptap/pm/model'
-import { Check, ClipboardCopy, FilePlus2, FileText, List, Lock, PanelLeft, RefreshCw } from 'lucide-react'
+import { ArrowDownUp, Check, ClipboardCopy, FilePlus2, FileText, List, Lock, PanelLeft, RefreshCw } from 'lucide-react'
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { ThemeControl, SourceControl } from '../components/EditorControls'
 import type { Appearance, DocumentSource } from '../components/EditorControls'
@@ -12,6 +12,7 @@ import type { PaseoNavigationView } from './PaseoNavigation'
 import type { PaseoAgent, PaseoAgentLogs, PaseoTreeSnapshot, PaseoWorkspace as PaseoWorkspaceRecord } from './paseo-types'
 
 export const PASEO_SELECTION_STORAGE_KEY = 'aiblock-editor.paseo.agent.v1'
+export const PASEO_MESSAGE_ORDER_STORAGE_KEY = '{{SECRET_x8m96b1o}}'
 const emptyTree: PaseoTreeSnapshot = { available: true, projects: [], workspaces: [], orphanAgents: [] }
 
 type PaseoBridge = DesktopBridge & Required<Pick<DesktopBridge, 'readPaseoTree' | 'readPaseoLogs'>>
@@ -22,6 +23,8 @@ export interface PaseoSaveRequest {
   readonly markdown: string
   readonly agent: PaseoAgent
 }
+
+export type PaseoMessageOrder = 'asc' | 'desc'
 
 interface PaseoWorkspaceProps {
   readonly bridge: PaseoBridge
@@ -45,6 +48,42 @@ function rememberSelectedAgent(id: string) {
   } catch {
     // Selection remains available for this mounted view.
   }
+}
+
+function readMessageOrder(): PaseoMessageOrder {
+  try {
+    return localStorage.getItem(PASEO_MESSAGE_ORDER_STORAGE_KEY) === 'desc' ? 'desc' : 'asc'
+  } catch {
+    return 'asc'
+  }
+}
+
+function rememberMessageOrder(order: PaseoMessageOrder) {
+  try {
+    localStorage.setItem(PASEO_MESSAGE_ORDER_STORAGE_KEY, order)
+  } catch {
+    // Ordering still applies to this mounted view.
+  }
+}
+
+export function formatPaseoError(error: unknown): string {
+  let message = error instanceof Error ? error.message : typeof error === 'string' ? error : '未知错误'
+  let previous = ''
+  while (previous !== message) {
+    previous = message
+    for (const prefix of [
+      /^Error invoking remote method '[^']+':\s*/i,
+      /^Unable to read Paseo logs:\s*/i,
+      /^Error:\s*/i,
+    ]) message = message.replace(prefix, '')
+  }
+  const provider = /references unavailable provider ['"]?([a-z0-9._-]+)['"]?/i.exec(message)
+  if (provider?.[1]) return `Provider '${provider[1]}' 不可用`
+  const meaningful = message.split(/\r?\n/).map(line => line.trim()).find(line =>
+    line && !/^Command failed:/i.test(line) && !/^at\s/.test(line))
+  const normalized = meaningful || message.trim() || '未知错误'
+  const characters = Array.from(normalized)
+  return characters.length > 240 ? `${characters.slice(0, 239).join('')}…` : normalized
 }
 
 function wideViewport() {
@@ -97,7 +136,9 @@ export function PaseoWorkspace({ bridge, schema, appearance, onSourceChange, onS
   const [logs, setLogs] = useState<PaseoAgentLogs | null>(null)
   const [treeLoading, setTreeLoading] = useState(true)
   const [logsFailed, setLogsFailed] = useState(false)
+  const [logsError, setLogsError] = useState('')
   const [includeDetails, setIncludeDetails] = useState(false)
+  const [messageOrder, setMessageOrder] = useState<PaseoMessageOrder>(readMessageOrder)
   const [navigationOpen, setNavigationOpen] = useState(wideViewport)
   const [navigationView, setNavigationView] = useState<PaseoNavigationView>('windows')
   const [notice, setNotice] = useState('')
@@ -127,9 +168,17 @@ export function PaseoWorkspace({ bridge, schema, appearance, onSourceChange, onS
   const agentUpdatedAt = agent?.updatedAt
   const document = useMemo(() => paseoLogsToDocument(
     schema, title, agent ?? null, logs?.items ?? [],
-    { includeDetails, ...(logsFailed ? { emptyMessage: '无法读取这个 Paseo 窗口的日志。请稍后刷新重试。' } : {}) },
+    {
+      includeDetails,
+      order: messageOrder,
+      ...(logsFailed ? {
+        emptyMessage: logsError
+          ? `无法读取这个 Paseo 窗口的日志：${logsError}`
+          : '无法读取这个 Paseo 窗口的日志。请稍后刷新重试。',
+      } : {}),
+    },
   ), [schema, title, agentId, agentTitleValue, agentCwd, agentProvider, agentModel, agentStatus, agentAttention,
-    agentUpdatedAt, logs, includeDetails, logsFailed])
+    agentUpdatedAt, logs, includeDetails, logsFailed, logsError, messageOrder])
 
   const fetchLogs = useCallback(async (selectedId: string, options: { silent?: boolean; force?: boolean } = {}) => {
     const sequence = ++logsRequest.current
@@ -138,20 +187,24 @@ export function PaseoWorkspace({ bridge, schema, appearance, onSourceChange, onS
     } else {
       setLogs(null)
       setLogsFailed(false)
+      setLogsError('')
     }
     try {
       const value = await bridge.readPaseoLogs(selectedId, options.force ? { force: true } : undefined)
       if (!mounted.current || sequence !== logsRequest.current) return
       setLogs(value)
       setLogsFailed(false)
+      setLogsError('')
       setNotice('')
-    } catch {
+    } catch (error) {
       if (!mounted.current || sequence !== logsRequest.current) return
+      const detail = formatPaseoError(error)
       scrollRestore.current = null
-      if (options.silent) setNotice('无法刷新这个 Paseo 窗口，当前仍显示上一次的内容。')
+      if (options.silent) setNotice(`无法刷新这个 Paseo 窗口，当前仍显示上一次的内容：${detail}`)
       else {
         setLogs(null)
         setLogsFailed(true)
+        setLogsError(detail)
       }
     }
   }, [bridge])
@@ -168,6 +221,7 @@ export function PaseoWorkspace({ bridge, schema, appearance, onSourceChange, onS
       selectedRef.current = nextId
       setLogs(null)
       setLogsFailed(false)
+      setLogsError('')
       setSelectedAgentId(nextId)
       if (nextId) rememberSelectedAgent(nextId)
     } else if (refreshCurrent && nextId) {
@@ -237,6 +291,7 @@ export function PaseoWorkspace({ bridge, schema, appearance, onSourceChange, onS
     selectedRef.current = id
     setLogs(null)
     setLogsFailed(false)
+    setLogsError('')
     setSelectedAgentId(id)
     rememberSelectedAgent(id)
     if (!wideViewport()) setNavigationOpen(false)
@@ -253,6 +308,13 @@ export function PaseoWorkspace({ bridge, schema, appearance, onSourceChange, onS
   function refresh() {
     void bridge.readPaseoTree().then(next => applyTree(next, true, true))
       .catch(() => setNotice('无法刷新 Paseo 目录树。'))
+  }
+
+  function toggleMessageOrder() {
+    const next = messageOrder === 'asc' ? 'desc' : 'asc'
+    setMessageOrder(next)
+    rememberMessageOrder(next)
+    window.scrollTo(0, 0)
   }
 
   async function copyMarkdown() {
@@ -310,6 +372,11 @@ export function PaseoWorkspace({ bridge, schema, appearance, onSourceChange, onS
         <span className="paseo-readonly" title="Paseo 只读预览">
           <Lock size={13} aria-hidden="true" /><span className="paseo-readonly-label">只读</span>
         </span>
+        <button type="button" className="paseo-order-toggle" aria-label="切换消息顺序" title="切换消息顺序"
+          onClick={toggleMessageOrder}>
+          <ArrowDownUp size={14} aria-hidden="true" />
+          <span>{messageOrder === 'desc' ? '最新在前' : '正序'}</span>
+        </button>
         <button type="button" className={`icon-control${includeDetails ? ' is-active' : ''}`}
           aria-label="显示细节" aria-pressed={includeDetails} title="显示思考与工具调用"
           disabled={!logs} onClick={() => setIncludeDetails(value => !value)}>
