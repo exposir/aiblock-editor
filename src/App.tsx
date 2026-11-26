@@ -4,19 +4,22 @@ import { insertImageBlocks } from './editor/extensions/image-block'
 import type { ImageAttributes } from './editor/extensions/image-attributes'
 import { getSchema } from '@tiptap/core'
 import type { Editor } from '@tiptap/core'
-import { Check, ChevronDown, ChevronRight, ClipboardCopy, Download, FileDown, FileUp, Keyboard, List, MessagesSquare, Monitor, Moon, PanelLeft, RotateCcw, Sun, X } from 'lucide-react'
+import { Check, ChevronDown, ChevronRight, ClipboardCopy, Download, FileDown, FileUp, Keyboard, List, MessagesSquare, PanelLeft, RotateCcw, X } from 'lucide-react'
 import { useCallback, useEffect, useEffectEvent, useLayoutEffect, useRef, useState, useSyncExternalStore } from 'react'
-import type { CSSProperties } from 'react'
 import { getDesktopBridge, openMarkdownFile, saveDocumentFile, suggestedFileName } from './desktop/bridge'
-import type { DesktopMenuCommand, DocumentFileFormat, MarkdownFile } from './desktop/bridge'
+import type { DesktopBridge, DesktopMenuCommand, DocumentFileFormat, MarkdownFile } from './desktop/bridge'
+import { ModeControl, SourceControl, ThemeControl } from './components/EditorControls'
+import type { Appearance, DocumentSource } from './components/EditorControls'
 import { createEditorExtensions } from './editor/extensions'
 import { docToMarkdown } from './editor/markdown/markdown-codec'
 import { downloadBlob, isMarkdownFile } from './editor/markdown/markdown-files'
-import { isThemeMode, readThemeMode, syncTheme, themeLabels, THEME_MEDIA_QUERY, toggleResolvedTheme } from './theme/theme'
+import { isThemeMode, readThemeMode, syncTheme, THEME_MEDIA_QUERY, toggleResolvedTheme } from './theme/theme'
 import type { ThemeMode } from './theme/theme'
 import { PageEditor } from './workspace/PageEditor'
 import type { EditPage } from './workspace/PageEditor'
 import { PagePreview } from './workspace/PagePreview'
+import { PaseoWorkspace } from './paseo/PaseoWorkspace'
+import type { PaseoSaveRequest } from './paseo/PaseoWorkspace'
 import { DOCUMENT_MODE_STORAGE_KEY, readDocumentMode, toggleDocumentMode } from './workspace/document-mode'
 import type { DocumentMode } from './workspace/document-mode'
 import { WorkspaceDialog } from './workspace/WorkspaceDialog'
@@ -37,71 +40,10 @@ import type { WorkspaceConflict } from './workspace/useWorkspace'
 const extensions = createEditorExtensions()
 const schema = getSchema(extensions)
 
+type PaseoBridge = DesktopBridge & Required<Pick<DesktopBridge, 'readPaseoTree' | 'readPaseoLogs'>>
+
 function wideViewport() {
   return window.matchMedia('(min-width: 1080px)').matches
-}
-
-interface Appearance {
-  readonly mode: ThemeMode
-  setMode(mode: ThemeMode): void
-}
-
-const themeOptions = {
-  light: { icon: Sun },
-  dark: { icon: Moon },
-  system: { icon: Monitor },
-} as const
-const themeOrder = ['light', 'dark', 'system'] as const
-
-function ThemeControl({ mode, setMode }: Appearance) {
-  const buttons = useRef<Array<HTMLButtonElement | null>>([])
-  const index = themeOrder.indexOf(mode)
-  return <div className="theme-segment" role="radiogroup" aria-label="外观主题" aria-orientation="horizontal"
-    style={{ '--theme-index': index } as CSSProperties}
-    onKeyDown={event => {
-      if (event.key !== 'ArrowLeft' && event.key !== 'ArrowRight') return
-      const current = themeOrder.indexOf(mode)
-      const delta = event.key === 'ArrowRight' ? 1 : -1
-      const next = (current + delta + themeOrder.length) % themeOrder.length
-      event.preventDefault()
-      setMode(themeOrder[next]!)
-      buttons.current[next]?.focus()
-    }}>
-    <span className="theme-segment-thumb" aria-hidden="true" />
-    {themeOrder.map((option, index) => {
-      const Icon = themeOptions[option].icon
-      const selected = mode === option
-      return <button key={option} ref={button => { buttons.current[index] = button }} type="button"
-        role="radio" aria-checked={selected} aria-label={themeLabels[option]} title={themeLabels[option]}
-        tabIndex={selected ? 0 : -1} className="theme-option" onClick={() => setMode(option)}>
-        <Icon size={14} aria-hidden="true" />
-      </button>
-    })}
-  </div>
-}
-
-const modeOrder = ['preview', 'edit'] as const
-const documentModeLabels: Record<DocumentMode, string> = { preview: '预览', edit: '编辑' }
-
-function ModeControl({ mode, setMode }: { readonly mode: DocumentMode; setMode: (mode: DocumentMode) => void }) {
-  const buttons = useRef<Array<HTMLButtonElement | null>>([])
-  const index = modeOrder.indexOf(mode)
-  return <div className="mode-segment" role="radiogroup" aria-label="文档模式" aria-orientation="horizontal"
-    style={{ '--mode-index': index } as CSSProperties}
-    onKeyDown={event => {
-      if (event.key !== 'ArrowLeft' && event.key !== 'ArrowRight') return
-      const next = (index + (event.key === 'ArrowRight' ? 1 : -1) + modeOrder.length) % modeOrder.length
-      event.preventDefault()
-      setMode(modeOrder[next]!)
-      buttons.current[next]?.focus()
-    }}>
-    <span className="mode-segment-thumb" aria-hidden="true" />
-    {modeOrder.map((option, optionIndex) => <button key={option} ref={button => { buttons.current[optionIndex] = button }}
-      type="button" role="radio" aria-checked={mode === option} aria-label={documentModeLabels[option]} title={documentModeLabels[option]}
-      tabIndex={mode === option ? 0 : -1} className="mode-option" onClick={() => setMode(option)}>
-      {documentModeLabels[option]}
-    </button>)}
-  </div>
 }
 
 type ConflictPreview = MarkdownDiff | { readonly message: string }
@@ -184,8 +126,10 @@ function Workspace({ workspace, anchor, saveFailed, loadFailed, retry, change, r
   const toolsMenu = useRef<HTMLDivElement>(null)
   const copyTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined)
   const modeSwitchScroll = useRef<number | null>(null)
+  const sourceScroll = useRef(0)
   const [navigationOpen, setNavigationOpen] = useState(wideViewport)
   const [navigationView, setNavigationView] = useState<NavigationView>('pages')
+  const [source, setSource] = useState<DocumentSource>('document')
   const [commentsOpen, setCommentsOpen] = useState(false)
   const [toolsOpen, setToolsOpen] = useState(false)
   const [copiedPageId, setCopiedPageId] = useState<string | null>(null)
@@ -195,6 +139,9 @@ function Workspace({ workspace, anchor, saveFailed, loadFailed, retry, change, r
   const bindingRef = useRef(binding)
   bindingRef.current = binding
   const failedImages = useSyncExternalStore(subscribeImageUploads, imageUploadFailures)
+  const bridge = getDesktopBridge()
+  const paseoBridge = bridge && typeof bridge.readPaseoTree === 'function' &&
+    typeof bridge.readPaseoLogs === 'function' ? bridge as PaseoBridge : null
   const activePage = findPage(workspace, workspace.activePageId)!
   const loadedPage = activePage.content && { ...activePage, content: activePage.content }
   const copied = copiedPageId === activePage.id
@@ -267,7 +214,7 @@ function Workspace({ workspace, anchor, saveFailed, loadFailed, retry, change, r
   }
 
   function changeDocumentMode(next: DocumentMode) {
-    if (next === documentMode) return
+    if (source !== 'document' || next === documentMode) return
     modeSwitchScroll.current = window.scrollY
     if (next === 'preview') {
       if (editor && !editor.isDestroyed) stageContent(activePage.id, () => editor.getJSON())
@@ -276,6 +223,22 @@ function Workspace({ workspace, anchor, saveFailed, loadFailed, retry, change, r
       setBinding(null)
     }
     onDocumentModeChange(next)
+  }
+
+  function changeSource(next: DocumentSource) {
+    if (!paseoBridge || next === source) return
+    if (next === 'paseo') {
+      sourceScroll.current = window.scrollY
+      if (editor && !editor.isDestroyed) stageContent(activePage.id, () => editor.getJSON())
+      commitDraft()
+      void flush()
+      setBinding(null)
+      setCommentsOpen(false)
+      setToolsOpen(false)
+    } else {
+      modeSwitchScroll.current = sourceScroll.current
+    }
+    setSource(next)
   }
 
   function openPage(id: string) {
@@ -391,6 +354,7 @@ function Workspace({ workspace, anchor, saveFailed, loadFailed, retry, change, r
   }
 
   const runMenuCommand = useEffectEvent((command: DesktopMenuCommand) => {
+    if (source === 'paseo') return
     switch (command) {
       case 'new-page': newPage(null); break
       case 'import-markdown': pickMarkdown(); break
@@ -406,7 +370,7 @@ function Workspace({ workspace, anchor, saveFailed, loadFailed, retry, change, r
   useEffect(() => getDesktopBridge()?.onMenuCommand(command => runMenuCommand(command)), [])
 
   useEffect(() => {
-    if (getDesktopBridge()) return
+    if (getDesktopBridge() || source !== 'document') return
     const shortcut = (event: KeyboardEvent) => {
       if (event.repeat || !(event.metaKey || event.ctrlKey) || event.altKey || event.shiftKey ||
           event.key.toLowerCase() !== 'e') return
@@ -415,7 +379,7 @@ function Workspace({ workspace, anchor, saveFailed, loadFailed, retry, change, r
     }
     window.addEventListener('keydown', shortcut)
     return () => window.removeEventListener('keydown', shortcut)
-  }, [documentMode])
+  }, [documentMode, source])
 
   async function insertDetachedImages(id: string, images: readonly ImageAttributes[], position: number) {
     const page = await loadPage(id)
@@ -452,6 +416,18 @@ function Workspace({ workspace, anchor, saveFailed, loadFailed, retry, change, r
     }
   }
 
+  function savePaseoDocument({ title, content }: PaseoSaveRequest) {
+    sourceScroll.current = 0
+    const identity = newPageIdentity()
+    change(current => addPage(current, identity, { title, content, icon: '◈' }))
+    onDocumentModeChange('preview')
+  }
+
+  if (source === 'paseo' && paseoBridge) {
+    return <PaseoWorkspace bridge={paseoBridge} schema={schema} appearance={appearance}
+      onSourceChange={changeSource} onSaveDocument={savePaseoDocument} />
+  }
+
   return (
     <>
       <header className="app-header workspace-header" data-editor-sticky-header="">
@@ -483,6 +459,7 @@ function Workspace({ workspace, anchor, saveFailed, loadFailed, retry, change, r
             aria-controls={commentsOpen ? 'document-comments' : undefined} onClick={() => showComments(!commentsOpen)}>
             <MessagesSquare size={18} aria-hidden="true" />
           </button>
+          {paseoBridge && <SourceControl source={source} setSource={changeSource} />}
           <ModeControl mode={documentMode} setMode={changeDocumentMode} />
           <ThemeControl {...appearance} />
           <button type="button" className="icon-control" aria-label="快捷键" title="快捷键"

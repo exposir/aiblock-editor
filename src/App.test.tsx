@@ -11,6 +11,7 @@ import { splitLegacyWorkspace } from './workspace/workspace-format'
 import type { PageShard, WorkspaceExternalChange } from './workspace/workspace-format'
 import { createEditorExtensions } from './editor/extensions'
 import { getSchema } from '@tiptap/core'
+import type { PaseoAgentLogs, PaseoTreeSnapshot } from './paseo/paseo-types'
 
 const schema = getSchema(createEditorExtensions())
 
@@ -66,6 +67,7 @@ describe('App 多页面集成', () => {
 
   it('mode: 顶栏预览/编辑开关切换为纯静态文档并持久化', async () => {
     const user = await mountApp()
+    expect(screen.queryByRole('radiogroup', { name: '内容来源' })).not.toBeInTheDocument()
     const group = screen.getByRole('radiogroup', { name: '文档模式' })
     expect(within(group).getByRole('radio', { name: '编辑' })).toHaveAttribute('aria-checked', 'true')
     await user.click(within(group).getByRole('radio', { name: '预览' }))
@@ -133,6 +135,99 @@ describe('App 多页面集成', () => {
     expect(await screen.findByRole('textbox', { name: '文档正文' })).toHaveTextContent('导入后的正文')
     expect(screen.getByRole('textbox', { name: '文档标题' })).toHaveValue('导入页面')
     expect(screen.getByRole('radio', { name: '编辑' })).toHaveAttribute('aria-checked', 'true')
+  })
+
+  it('paseo: 仅桌面入口，预览只读、细节开关、复制和另存为文档', async () => {
+    const bridge = {
+      platform: 'darwin',
+      setTheme: vi.fn(async () => {}),
+      readIndex: vi.fn(async () => null),
+      readPage: vi.fn(async () => null),
+      commit: vi.fn(async () => {}),
+      saveImageAsset: vi.fn(),
+      readImageAssets: vi.fn(async () => []),
+      openMarkdownFile: vi.fn(async () => null),
+      saveFile: vi.fn(async () => true),
+      onMenuCommand: () => () => {},
+      readPaseoTree: vi.fn(async (): Promise<PaseoTreeSnapshot> => ({
+        available: true,
+        projects: [{
+          projectId: 'project-1',
+          name: 'ai-home',
+          path: '/tmp/ai-home',
+          workspaces: [{
+            workspaceId: 'workspace-1',
+            projectId: 'project-1',
+            title: '发布窗口',
+            displayName: 'main',
+            cwd: '/tmp/ai-home',
+            pinnedAt: null,
+            updatedAt: '2026-11-26T10:00:00.000Z',
+            agents: [{
+              id: 'agent-1',
+              title: '发布检查',
+              workspaceId: 'workspace-1',
+              cwd: '/tmp/ai-home',
+              provider: 'codex',
+              model: 'gpt-5',
+              lastStatus: 'running',
+              requiresAttention: false,
+              updatedAt: '2026-11-26T10:00:00.000Z',
+            }],
+          }],
+        }],
+        workspaces: [],
+        orphanAgents: [],
+      })),
+      readPaseoLogs: vi.fn(async (): Promise<PaseoAgentLogs> => ({
+        agentId: 'agent-1',
+        items: [
+          { type: 'user_message', text: '检查发布流程' },
+          { type: 'reasoning', text: '先核对发布脚本。' },
+          { type: 'assistant_message', text: '发布流程检查完成。' },
+        ],
+      })),
+    }
+    vi.stubGlobal('desktop', bridge)
+    const user = userEvent.setup()
+    render(<App />)
+    await screen.findByRole('textbox', { name: '文档正文' })
+    const sources = screen.getByRole('radiogroup', { name: '内容来源' })
+    expect(within(sources).getByRole('radio', { name: '文档' })).toHaveAttribute('aria-checked', 'true')
+    await user.click(within(sources).getByRole('radio', { name: 'Paseo' }))
+
+    const paseoNavigation = await screen.findByRole('navigation', { name: 'Paseo 窗口树' })
+    expect(within(paseoNavigation).getByText('ai-home')).toBeInTheDocument()
+    await user.click(within(paseoNavigation).getByRole('button', { name: /发布窗口/ }))
+    const preview = await screen.findByRole('article', { name: '文档预览' })
+    expect(preview).toHaveTextContent('发布流程检查完成')
+    expect(screen.queryByRole('textbox')).not.toBeInTheDocument()
+    expect(document.querySelector('.ProseMirror')).toBeNull()
+    expect(document.querySelector('[contenteditable]')).toBeNull()
+    expect(screen.queryByRole('button', { name: '评论侧栏' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: '导入与导出' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: '重置示例工作区' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: '新建顶层页面' })).not.toBeInTheDocument()
+
+    expect(screen.queryByText('思考与工具调用（1 项）')).not.toBeInTheDocument()
+    await user.click(screen.getByRole('button', { name: '显示细节' }))
+    expect(screen.getByText('思考与工具调用（1 项）')).toBeInTheDocument()
+    expect(screen.getByText('先核对发布脚本。')).toBeInTheDocument()
+    expect(bridge.readPaseoLogs).toHaveBeenCalledWith('agent-1', undefined)
+
+    const writeText = vi.fn().mockResolvedValue(undefined)
+    Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { writeText } })
+    await user.click(screen.getByRole('button', { name: '复制 Paseo Markdown' }))
+    expect(writeText).toHaveBeenCalledWith(expect.stringContaining('发布流程检查完成'))
+
+    await user.click(screen.getByRole('button', { name: '另存为文档' }))
+    expect(await screen.findByRole('button', { name: '发布窗口' })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: '发布窗口' })).toHaveAttribute('aria-current', 'page')
+    expect(screen.getByRole('button', { name: '评论侧栏' })).toHaveAttribute('aria-expanded', 'false')
+    expect(within(screen.getByRole('radiogroup', { name: '内容来源' }))
+      .getByRole('radio', { name: '文档' })).toHaveAttribute('aria-checked', 'true')
+    expect(screen.getByRole('article', { name: '文档预览' })).toHaveTextContent('发布流程检查完成')
+    expect(document.querySelector('.ProseMirror')).toBeNull()
   })
 
   it('mode: 预览目录由 JSON 提取，评论只读且可定位正文锚点', async () => {

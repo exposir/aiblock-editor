@@ -16,7 +16,7 @@ import type { PageShard, WorkspaceCloseResult, WorkspaceCommit, WorkspaceCommitO
 import { browserWorkspaceStorage } from '../workspace/workspace-storage'
 import { testImage } from '../test/image-fixture'
 import {
-  applyDesktopPlatform, getDesktopBridge,
+  applyDesktopPlatform, desktopChannels, getDesktopBridge,
   menuCommands, openMarkdownFile, saveDocumentFile, suggestedFileName,
 } from './bridge'
 import type { DesktopBridge, DesktopMenuCommand, SaveFileOptions } from './bridge'
@@ -96,6 +96,9 @@ describe('desktop capabilities', () => {
   // @partition web: unchanged picker/download and unavailable localStorage
   // @partition native: separate storage, platform and dialogs, including cancellation
   it('keeps browser storage, file picker and download functional without a preload', async () => {
+    expect(desktopChannels.paseoTree).toBe('paseo:tree')
+    expect(desktopChannels.paseoLogs).toBe('paseo:logs')
+    expect(desktopChannels.paseoChanged).toBe('paseo:changed')
     expect(getDesktopBridge()).toBeUndefined()
     const root = document.createElement('html')
     applyDesktopPlatform(root)

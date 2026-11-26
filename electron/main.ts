@@ -16,6 +16,8 @@ import { createMainLogger, createRendererRecovery } from './logger.js'
 import { contentSecurityPolicy, decideNavigation, developmentUrl, externalUrl, isAppDocument } from './security.js'
 import { createImageAssetFiles, createWorkspaceFiles, isSaveFileOptions, pruneOrphanImageAssets, readMarkdownFile, readOptionalText, writeAtomicText } from './storage.js'
 import { WorkspaceConflictError, WorkspaceLockedError } from '../src/workspace/workspace-files.js'
+import { createPaseoService, parsePaseoLogsRequest, paseoHome, watchPaseo } from './paseo.js'
+import type { PaseoService, PaseoWatcher } from './paseo.js'
 import { watchWorkspace } from './workspace-watcher.js'
 import type { WorkspaceWatcher } from './workspace-watcher.js'
 import { minimumWindowSize, parseWindowState, restoreWindowState } from './window-state.js'
@@ -48,6 +50,7 @@ let mainWindow: BrowserWindow | null = null
 let openingWindow = false
 let quitting = false
 let workspaceWatcher: WorkspaceWatcher | undefined
+let paseoWatcher: PaseoWatcher | undefined
 
 function reportError(error: unknown) {
   logger.write('error', 'main-process', error)
@@ -201,10 +204,18 @@ function installMenu(setTheme: (mode: ThemeMode) => Promise<void>) {
   Menu.setApplicationMenu(Menu.buildFromTemplate(menu))
 }
 
-function trustedHandler(channel: string, handle: (window: BrowserWindow, value: unknown) => unknown) {
-  ipcMain.handle(channel, (event, value: unknown) => {
+function trustedHandler(channel: string, handle: (window: BrowserWindow, ...values: unknown[]) => unknown) {
+  ipcMain.handle(channel, (event, ...values: unknown[]) => {
     if (!mainWindow || !isTrustedSender(event)) throw new Error('Untrusted desktop IPC sender')
-    return handle(mainWindow, value)
+    return handle(mainWindow, ...values)
+  })
+}
+
+function installPaseoHandlers(paseo: PaseoService) {
+  trustedHandler(channels.paseoTree, () => paseo.readTree())
+  trustedHandler(channels.paseoLogs, (_window, agentId, options) => {
+    const request = parsePaseoLogsRequest(agentId, options)
+    return paseo.readLogs(request.agentId, request.options)
   })
 }
 
@@ -412,6 +423,8 @@ if (app.requestSingleInstanceLock()) {
   app.on('will-quit', () => {
     workspaceWatcher?.close()
     workspaceWatcher = undefined
+    paseoWatcher?.close()
+    paseoWatcher = undefined
   })
   process.on('SIGINT', () => app.quit())
   process.on('SIGTERM', () => app.quit())
@@ -426,6 +439,13 @@ if (app.requestSingleInstanceLock()) {
       window.webContents.send(channels.externalChange, change)
     })
     workspaceWatcher = watcher
+    const paseo = createPaseoService()
+    installPaseoHandlers(paseo)
+    paseoWatcher = watchPaseo(paseoHome(), () => {
+      const window = mainWindow
+      if (!window || window.webContents.isDestroyed() || !isAppDocument(window.webContents.getURL(), appUrl)) return
+      window.webContents.send(channels.paseoChanged)
+    })
     const assets = createImageAssetFiles(directory)
     protocol.handle(imageAssetScheme, request => assets.respond(request, appUrl))
     const statePath = join(directory, 'window-state.json')

@@ -1,4 +1,5 @@
 import { themeModes } from '../theme/theme.js'
+import type { PaseoAgentLogs, PaseoLogsOptions, PaseoTreeSnapshot } from '../paseo/paseo-types.js'
 import type { ImageAssetInput, ImageAssetMetadata } from '../workspace/asset-format.js'
 import type { WorkspaceExternalChange, WorkspacePersistence } from '../workspace/workspace-format.js'
 import type { ThemeMode } from '../theme/theme.js'
@@ -42,6 +43,9 @@ export const desktopChannels = {
   flushWorkspace: 'workspace:flush',
   workspaceFlushed: 'workspace:flushed',
   externalChange: 'workspace:external-change',
+  paseoTree: 'paseo:tree',
+  paseoLogs: 'paseo:logs',
+  paseoChanged: 'paseo:changed',
 } as const
 
 export interface DesktopBridge extends WorkspacePersistence {
@@ -54,6 +58,9 @@ export interface DesktopBridge extends WorkspacePersistence {
   saveFile(options: SaveFileOptions): Promise<boolean>
   onMenuCommand(listener: (command: DesktopMenuCommand) => void): () => void
   onExternalChange?(listener: (change: WorkspaceExternalChange) => void): () => void
+  readPaseoTree?(): Promise<PaseoTreeSnapshot>
+  readPaseoLogs?(agentId: string, options?: PaseoLogsOptions): Promise<PaseoAgentLogs>
+  onPaseoChange?(listener: () => void): () => void
 }
 
 declare global {

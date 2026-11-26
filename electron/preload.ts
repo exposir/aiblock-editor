@@ -36,6 +36,13 @@ const desktop: DesktopBridge = {
     ipcRenderer.on(channels.externalChange, receive)
     return () => { ipcRenderer.off(channels.externalChange, receive) }
   },
+  readPaseoTree: () => ipcRenderer.invoke(channels.paseoTree),
+  readPaseoLogs: (agentId, options) => ipcRenderer.invoke(channels.paseoLogs, agentId, options),
+  onPaseoChange(listener) {
+    const receive = () => listener()
+    ipcRenderer.on(channels.paseoChanged, receive)
+    return () => { ipcRenderer.off(channels.paseoChanged, receive) }
+  },
   onClosing(listener) {
     const flush = async (_event: Electron.IpcRendererEvent, requestId: string) => {
       try {
