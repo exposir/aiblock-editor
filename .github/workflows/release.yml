@@ -119,10 +119,11 @@ jobs:
           NODE
             pnpm exec electron-builder \
               --config "$RUNNER_TEMP/electron-builder-macos.json" \
-              --mac dmg --arm64
+              --mac dmg --arm64 --publish never
           else
+            unset CSC_LINK CSC_KEY_PASSWORD APPLE_ID APPLE_APP_SPECIFIC_PASSWORD APPLE_TEAM_ID
             CSC_IDENTITY_AUTO_DISCOVERY=false \
-              pnpm exec electron-builder --mac dmg --arm64
+              pnpm exec electron-builder --mac dmg --arm64 --publish never
           fi
 
           dmg="$(find release -maxdepth 1 -type f -name '*.dmg' | sed -n '1p')"
